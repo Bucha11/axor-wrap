@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "axor-wrap"
+version = "0.1.0"
+description = "Wrap engine for the Axor ecosystem: scan agent code, emit tool manifests, compile governance, wrap the runtime"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+keywords = ["agents", "governance", "llm", "ai", "security", "langchain", "mcp"]
+
+# Zero required deps by design — the scanner/compiler core is stdlib-only.
+dependencies = []
+
+[project.optional-dependencies]
+kernel = [
+    "axor-core>=0.10,<0.11",
+]
+# Control-Plane attachment (axor_wrap.plane). The plane primitives themselves
+# live in THIS package — axor-core contributes only the primitives they reason
+# over (desired-state lattice, JCS canonical bytes, the event schema), so the
+# kernel keeps zero required dependencies and no network surface. The transport
+# deps are ours: httpx for the SSE/telemetry dial-out, cryptography to verify
+# operator command signatures against LOCAL keys.
+plane = [
+    "axor-core>=0.10,<0.11",
+    "httpx>=0.27",
+    "cryptography>=42.0",
+]
+dev = [
+    "ruff>=0.5",
+    # axor_wrap.plane's tests came over from axor-core with the code, verbatim —
+    # they pin protocol-v0.2 governance invariants, so they were moved rather
+    # than rewritten, and they are pytest-native (async, asyncio_mode=auto).
+    # pytest also collects the stdlib-unittest tests, so it runs the whole suite.
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+axor-wrap = "axor_wrap.cli:main"
+
+[project.urls]
+Repository = "https://github.com/Bucha11/axor-wrap"
+
+[tool.hatch.build.targets.wheel]
+packages = ["axor_wrap"]
+
+# TEMPORARY local-dev override: axor_wrap.plane needs axor-core 0.10 (the release
+# that drops axor_core.plane in favour of this package), which is not on PyPI
+# yet, so resolution points at the sibling checkout. Drop this line once 0.10 is
+# published.
+[tool.uv.sources]
+axor-core = { path = "../axor-core", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+
+[tool.ruff.lint]
+# meaningful correctness rules (pyflakes + bugbear + comprehensions), not style
+# noise; the codebase uses dict[str, object] at contract boundaries by design.
+select = ["F", "E9", "B", "C4", "UP032", "PLE"]
+ignore = ["B008", "B905", "C401", "C408"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "F841"]
