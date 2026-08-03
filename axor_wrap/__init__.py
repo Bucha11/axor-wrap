@@ -21,11 +21,25 @@ from axor_wrap.errors import (
 )
 from axor_wrap.manifest import build_manifest, ensure_valid, validate_manifest
 from axor_wrap.roles import EffectGuess, infer_effect
+from axor_wrap.experiment import (
+    AssignmentError,
+    arm_for,
+    arms,
+    enforcement_of,
+    planned_trials,
+    toolset_for_arm,
+)
 from axor_wrap.runtime import ENFORCEMENT_OFF, ENFORCEMENT_ON, WrappedToolset, wrap_callables
 
 __version__ = get_version("axor-wrap")
 
 __all__ = [
+    "AssignmentError",
+    "arm_for",
+    "arms",
+    "enforcement_of",
+    "planned_trials",
+    "toolset_for_arm",
     "AdmissionHeld",
     "ENFORCEMENT_OFF",
     "ENFORCEMENT_ON",
