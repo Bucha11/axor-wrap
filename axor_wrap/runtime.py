@@ -6,9 +6,10 @@ each call: ``evaluate → (deny → ToolDenied) → call → register_output``. 
 the exact usage contract the governor documents, and the same decision path the
 Control Plane and axor-lab's real-kernel backend run.
 
-axor-core is an OPTIONAL dependency (extra ``kernel``): the import is lazy and a
-missing install raises ``KernelNotInstalledError`` with the exact pip command.
-For frameworks that own their invocation loop (LangChain executors, MCP
+axor-core is a REQUIRED dependency — this module's whole job is gating through
+the real kernel, and a wrap that cannot gate is not a wrap. The import stays
+lazy so a test can inject a governor and so the scanner path pays no import
+cost, not because the kernel is optional. For frameworks that own their invocation loop (LangChain executors, MCP
 servers), ``wrap_callables`` returns drop-in wrapped callables that share one
 governor session.
 """

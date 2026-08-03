@@ -11,21 +11,25 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 keywords = ["agents", "governance", "llm", "ai", "security", "langchain", "mcp"]
 
-# Zero required deps by design — the scanner/compiler core is stdlib-only.
-dependencies = []
-
-[project.optional-dependencies]
-kernel = [
+# axor-core is REQUIRED, not an extra. This package's headline artifact is a
+# kernel-gated runtime — every tool call goes evaluate → deny? → call →
+# register_output through the real kernel — and the governor config it compiles
+# is meaningless without the governor that consumes it. Shipping that behind an
+# extra meant `pip install axor-wrap` produced something that scans code and
+# then raises when asked to gate it, and it let the plane tests sit red on a
+# machine where nothing was obviously missing.
+dependencies = [
     "axor-core>=0.10,<0.11",
 ]
+
+[project.optional-dependencies]
 # Control-Plane attachment (axor_wrap.plane). The plane primitives themselves
 # live in THIS package — axor-core contributes only the primitives they reason
-# over (desired-state lattice, JCS canonical bytes, the event schema), so the
-# kernel keeps zero required dependencies and no network surface. The transport
-# deps are ours: httpx for the SSE/telemetry dial-out, cryptography to verify
-# operator command signatures against LOCAL keys.
+# over (desired-state lattice, JCS canonical bytes, the event schema). What is
+# optional here is the TRANSPORT, not the kernel: httpx for the SSE/telemetry
+# dial-out, cryptography to verify operator command signatures against LOCAL
+# keys. A wrap that never attaches to a plane needs neither.
 plane = [
-    "axor-core>=0.10,<0.11",
     "httpx>=0.27",
     "cryptography>=42.0",
 ]
@@ -37,6 +41,8 @@ dev = [
     # pytest also collects the stdlib-unittest tests, so it runs the whole suite.
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    # the plane tests verify ed25519 operator signatures
+    "cryptography>=42.0",
 ]
 
 [project.scripts]
