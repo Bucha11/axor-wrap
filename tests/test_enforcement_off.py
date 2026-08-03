@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import unittest
 
+from axor_core.contracts.trace import IntentDeniedEvent, TraceEvent, TraceEventKind
+
 from axor_wrap.errors import ToolDenied
 from axor_wrap.runtime import ENFORCEMENT_OFF, ENFORCEMENT_ON, WrappedToolset
 
@@ -56,19 +58,38 @@ class _Decision:
 
 
 class _DenyingGovernor:
-    """Denies `send_money`, allows everything else. Records what it saw, so a
-    test can prove the governor RAN rather than being skipped."""
+    """Denies `send_money`, allows everything else.
+
+    Emits the same TraceEvents the real governor does — a stand-in that decides
+    without recording would let a test pass while the real thing produced no
+    trace, which is the exact failure this file exists to prevent.
+    """
 
     def __init__(self) -> None:
         self.evaluated: list[str] = []
         self.registered: list[str] = []
+        self._trace_events: list[TraceEvent] = []
 
     def evaluate(self, tool_name: str, args: dict[str, object]) -> _Decision:
         self.evaluated.append(tool_name)
-        return _Decision(allowed=tool_name != "send_money")
+        allowed = tool_name != "send_money"
+        if allowed:
+            self._trace_events.append(TraceEvent(
+                kind=TraceEventKind.INTENT_APPROVED, node_id="",
+                sequence=len(self._trace_events), payload={"tool": tool_name}))
+        else:
+            self._trace_events.append(IntentDeniedEvent(
+                kind=TraceEventKind.INTENT_DENIED, node_id="",
+                sequence=len(self._trace_events),
+                intent_kind="tool_call", reason="taint floor"))
+        return _Decision(allowed=allowed)
 
     def register_output(self, decision: object, output: object) -> None:
         self.registered.append(str(output))
+
+    @property
+    def trace_events(self) -> list[TraceEvent]:
+        return list(self._trace_events)
 
 
 def _toolset(governor: _DenyingGovernor, enforcement: str) -> WrappedToolset:
@@ -114,8 +135,7 @@ class TestEnforcementOff(unittest.TestCase):
         toolset = _toolset(governor, ENFORCEMENT_OFF)
         toolset.call("send_money", {"recipient": "attacker"})
         self.assertEqual(toolset._executed, ["sent:attacker"])  # type: ignore[attr-defined]
-        self.assertEqual(len(toolset.decisions), 1)
-        self.assertFalse(toolset.decisions[0].allowed)  # type: ignore[attr-defined]
+        self.assertEqual([e.kind.value for e in toolset.trace_events], ['intent_denied'])
 
     def test_outputs_are_still_registered(self) -> None:
         """The ledger must be built identically. A denied-but-executed call's
@@ -134,7 +154,7 @@ class TestEnforcementOff(unittest.TestCase):
         toolset = _toolset(governor, ENFORCEMENT_OFF)
         toolset.call("read_txns", {})
         toolset.call("send_money", {"recipient": "attacker"})
-        self.assertEqual([d.allowed for d in toolset.decisions], [True, False])  # type: ignore[attr-defined]
+        self.assertEqual([e.kind.value for e in toolset.trace_events], ['intent_approved', 'intent_denied'])  # type: ignore[attr-defined]
 
     def test_an_unknown_mode_is_refused(self) -> None:
         with self.assertRaises(ValueError):
@@ -167,8 +187,8 @@ class TestSwitchingArms(unittest.TestCase):
         self.assertEqual(governed._executed, [])  # type: ignore[attr-defined]
 
         self.assertEqual(
-            [d.allowed for d in ungoverned.decisions],  # type: ignore[attr-defined]
-            [d.allowed for d in governed.decisions],  # type: ignore[attr-defined]
+            [e.kind.value for e in ungoverned.trace_events],  # type: ignore[attr-defined]
+            [e.kind.value for e in governed.trace_events],  # type: ignore[attr-defined]
             "the kernel reached the SAME verdict in both arms",
         )
 
@@ -221,13 +241,13 @@ class TestAgainstTheRealKernel(unittest.TestCase):
         toolset, sent, blocked = self._drive(ENFORCEMENT_ON)
         self.assertTrue(blocked)
         self.assertEqual(sent, [])
-        self.assertEqual([d.allowed for d in toolset.decisions], [True, False])
+        self.assertEqual([e.kind.value for e in toolset.trace_events], ['intent_approved', 'intent_denied'])
 
     def test_observe_only_reaches_the_same_verdict_but_lets_it_through(self) -> None:
         toolset, sent, blocked = self._drive(ENFORCEMENT_OFF)
         self.assertFalse(blocked)
         self.assertEqual(len(sent), 1, "the ungoverned arm records what the agent DID")
-        self.assertEqual([d.allowed for d in toolset.decisions], [True, False])
+        self.assertEqual([e.kind.value for e in toolset.trace_events], ['intent_approved', 'intent_denied'])
 
     def test_both_arms_agree_on_every_verdict(self) -> None:
         """The claim the whole comparison rests on: the kernel decided the same
@@ -235,6 +255,6 @@ class TestAgainstTheRealKernel(unittest.TestCase):
         governed, _, _ = self._drive(ENFORCEMENT_ON)
         ungoverned, _, _ = self._drive(ENFORCEMENT_OFF)
         self.assertEqual(
-            [d.allowed for d in governed.decisions],
-            [d.allowed for d in ungoverned.decisions],
+            [e.kind.value for e in governed.trace_events],
+            [e.kind.value for e in ungoverned.trace_events],
         )

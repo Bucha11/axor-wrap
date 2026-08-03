@@ -89,15 +89,31 @@ class WrappedToolset:
                 f"got {enforcement!r}"
             )
         self.enforcement = enforcement
-        # every decision the governor reached, in call order — including the
-        # ones observe-only did not act on. Without this an ungoverned run would
-        # have nothing to report, and its trace could not carry the verdicts
-        # that make it replayable.
-        self.decisions: list[object] = []
 
     @property
     def tool_names(self) -> tuple[str, ...]:
         return tuple(self._tools)
+
+    @property
+    def trace_events(self) -> list[object]:
+        """The kernel's own TraceEvents for this session, in call order.
+
+        Read straight off the governor — this wrapper keeps no parallel record.
+        A second list maintained here would be a second instrumentation path,
+        and the whole point is that there is one: the IntentLoop and the
+        synchronous governor emit the SAME events, so one bridge serves both.
+        """
+        return list(self._governor.trace_events)  # type: ignore[attr-defined]
+
+    def kernel_events(self, node_id: str | None = None) -> list[object]:
+        """This session's trace in the shared kernel event schema.
+
+        What a runtime pushes to Lab or to the Control Plane. Both consumers
+        read this one feed; neither gets its own instrumentation.
+        """
+        from axor_wrap.plane.bridge import trace_to_kernel
+
+        return list(trace_to_kernel(self.trace_events, node_id))  # type: ignore[arg-type]
 
     def set_admission(self, admission: Callable[[], bool] | None) -> None:
         """Install (or clear) the intent-boundary admission predicate. Used by
@@ -118,7 +134,6 @@ class WrappedToolset:
         if self._admission is not None and not self._admission():
             raise AdmissionHeld("paused-or-stopped")
         decision = self._governor.evaluate(name, args)  # type: ignore[attr-defined]
-        self.decisions.append(decision)
         if not decision.allowed and self.enforcement == ENFORCEMENT_ON:
             raise ToolDenied(decision.reason, decision.category)
         # observe-only: the verdict is recorded and reported, the call proceeds.

@@ -182,14 +182,14 @@ class TestTheArmsDifferByOneFlag(unittest.TestCase):
                 toolset.call("send_money", {"recipient": tainted})
             except ToolDenied:
                 blocked = True
-            outcomes[unit] = ([d.allowed for d in toolset.decisions], sent, blocked)  # type: ignore[attr-defined]
+            outcomes[unit] = ([e.kind.value for e in toolset.trace_events], sent, blocked)  # type: ignore[attr-defined]
 
         ungoverned_verdicts, ungoverned_sent, ungoverned_blocked = outcomes["s:ungoverned:0"]
         governed_verdicts, governed_sent, governed_blocked = outcomes["s:governed:0"]
 
         self.assertEqual(ungoverned_verdicts, governed_verdicts,
                          "the kernel judged both arms identically")
-        self.assertEqual(ungoverned_verdicts, [True, False])
+        self.assertEqual(ungoverned_verdicts, ['intent_approved', 'intent_denied'])
         self.assertFalse(ungoverned_blocked)
         self.assertEqual(len(ungoverned_sent), 1)
         self.assertTrue(governed_blocked)
