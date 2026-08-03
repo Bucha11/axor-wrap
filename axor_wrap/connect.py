@@ -100,11 +100,26 @@ class LabRuntimeConnector:
         trial_id: str,
         trace: dict[str, object] | None,
         status: str = "completed",
+        metrics: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        """Finalize one trial, uploading its finished trace."""
+        """Finalize one trial, uploading its finished trace.
+
+        ``metrics`` carries what only this runtime could measure about the
+        trial — wall-clock, steps, tokens, spend. It travels BESIDE the trace
+        rather than inside it: ``trace/v1`` is axor-core-owned and describes
+        what happened, while cost and latency are Lab's experiment metadata.
+
+        Omit it and Lab records no measurements for the trial, which is honest
+        but leaves a latency or budget invariant unevaluable — Lab does not
+        time a run on someone else's machine, and it will not invent a number
+        it did not observe.
+        """
+        body: dict[str, object] = {"trace": trace, "status": status}
+        if metrics:
+            body["metrics"] = metrics
         return self._request(
             "POST", f"/runtime/jobs/{job_id}/trials/{trial_id}/complete",
-            {"trace": trace, "status": status}, token=self._require_key(),
+            body, token=self._require_key(),
         )
 
     # ── transport ────────────────────────────────────────────────────────────
