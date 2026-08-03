@@ -2,7 +2,10 @@
 
 ``WrappedToolset`` holds ``{name: callable}`` plus the tools' manifests, builds
 an ``axor_core.governor.ToolCallGovernor`` from the compiled config, and gates
-each call: ``evaluate → (deny → ToolDenied) → call → register_output``. That is
+each call: ``evaluate → (deny → ToolDenied) → call → register_output``. With
+``enforcement="off"`` the same path runs and records, but a deny does not block
+— that is an UNGOVERNED arm, which is observed but not enforced, and is a
+different thing from an unwrapped agent that nothing observed at all. That is
 the exact usage contract the governor documents, and the same decision path the
 Control Plane and axor-lab's real-kernel backend run.
 
@@ -20,6 +23,9 @@ import functools
 from typing import Callable
 
 from axor_wrap.compile import governor_kwargs
+
+ENFORCEMENT_ON = "on"
+ENFORCEMENT_OFF = "off"
 from axor_wrap.errors import (
     AdmissionHeld,
     KernelNotInstalledError,
@@ -52,6 +58,7 @@ class WrappedToolset:
         policy: dict[str, object] | None = None,
         governor: object | None = None,
         admission: Callable[[], bool] | None = None,
+        enforcement: str = ENFORCEMENT_ON,
     ) -> None:
         """``governor`` overrides construction (tests / custom kernels); otherwise
         the governor is built lazily-imported from axor-core with the kwargs
@@ -61,12 +68,32 @@ class WrappedToolset:
         boundary (before the governor runs) — ``False`` means an operator has
         paused/stopped this node, and the call is held with ``AdmissionHeld``.
         ``PlaneConnector.gate`` wires this to a live ``PlaneSession``, so a
-        Control-Plane pause/stop actually halts real tool execution."""
+        Control-Plane pause/stop actually halts real tool execution.
+
+        ``enforcement`` is ``"on"`` (deny blocks the call) or ``"off"``
+        (observe-only: the governor still evaluates every call and still
+        registers every output, so the taint ledger and the verdicts are built
+        exactly as under enforcement — nothing is blocked). Off is what an
+        UNGOVERNED experiment arm needs, and it is not the same as skipping the
+        governor: an unwrapped agent produces no ledger, no verdicts, and no way
+        to turn governance on later without re-integrating. Switching an arm
+        from ungoverned to governed is this flag and nothing else."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
         self.config = governor_kwargs(self.manifests, policy)
         self._governor = governor if governor is not None else _build_governor(self.config)
         self._admission = admission
+        if enforcement not in (ENFORCEMENT_ON, ENFORCEMENT_OFF):
+            raise ValueError(
+                f"enforcement must be {ENFORCEMENT_ON!r} or {ENFORCEMENT_OFF!r}, "
+                f"got {enforcement!r}"
+            )
+        self.enforcement = enforcement
+        # every decision the governor reached, in call order — including the
+        # ones observe-only did not act on. Without this an ungoverned run would
+        # have nothing to report, and its trace could not carry the verdicts
+        # that make it replayable.
+        self.decisions: list[object] = []
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -91,8 +118,13 @@ class WrappedToolset:
         if self._admission is not None and not self._admission():
             raise AdmissionHeld("paused-or-stopped")
         decision = self._governor.evaluate(name, args)  # type: ignore[attr-defined]
-        if not decision.allowed:
+        self.decisions.append(decision)
+        if not decision.allowed and self.enforcement == ENFORCEMENT_ON:
             raise ToolDenied(decision.reason, decision.category)
+        # observe-only: the verdict is recorded and reported, the call proceeds.
+        # register_output still runs, so a denied-but-executed call's output
+        # taints the ledger exactly as it would have — which is the whole point
+        # of measuring what an UNGOVERNED agent actually does.
         output = self._tools[name](**args)
         self._governor.register_output(decision, output)  # type: ignore[attr-defined]
         return output
