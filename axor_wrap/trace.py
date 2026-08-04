@@ -194,8 +194,10 @@ class _Ledger:
                       ref: dict[str, Any]) -> str:
         """An argument the agent chose, labelled from the kernel's own reading.
 
-        `ref` is the kernel's `arg_refs[name]`: the taint sources it derived for
-        this argument and whether it is sensitive. An empty source set means the
+        `ref` is the kernel's `arg_provenance[name]`: the taint sources it
+        derived for this argument and whether it is sensitive. NOT `arg_refs` —
+        that field is `{arg: value_ref}`, opaque ids the kernel's own replay
+        fold resolves, and it is not what a per-argument taint summary goes in. An empty source set means the
         kernel found no derivation — recording it as untrusted anyway would put
         a label in the trace that contradicts the verdict recorded beside it.
         """
@@ -386,7 +388,7 @@ def build_trace(
 
     for index, (call, event) in enumerate(_paired(calls, trace_events, observes)):
         payload: dict[str, Any] = getattr(event, "payload", {}) or {}
-        refs: dict[str, Any] = dict(payload.get("arg_refs", {}))
+        refs: dict[str, Any] = dict(payload.get("arg_provenance", {}))
         # a call the wrapper never saw (denied before it reached the tool) has no
         # raw values to mint. The kernel still recorded WHICH arguments it judged
         # and what they derived from, and the decision carries that; the trace
