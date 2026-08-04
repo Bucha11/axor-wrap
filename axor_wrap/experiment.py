@@ -77,6 +77,7 @@ def toolset_for_arm(
     policy: dict[str, object] | None = None,
     governor: object | None = None,
     admission: Callable[[], bool] | None = None,
+    inputs: dict[str, object] | None = None,
 ) -> WrappedToolset:
     """A wrapped toolset configured for the arm this trial belongs to.
 
@@ -95,12 +96,27 @@ def toolset_for_arm(
             "against a contract Lab never planned against"
         )
     arm = arm_for(assignment, trial_unit)
+    # the ARM's policy unless the caller overrides it: an allowlist declared on
+    # the condition is part of what the experiment is comparing, and dropping it
+    # would run the governed arm without the control it is meant to test.
     return WrappedToolset(
-        tools, list(manifests), policy=policy, governor=governor,
-        admission=admission, enforcement=enforcement_of(arm),
+        tools, list(manifests), policy=policy or arm.get("policy"),  # type: ignore[arg-type]
+        governor=governor, admission=admission, enforcement=enforcement_of(arm),
         # a trial exists to produce a trace; recording is not optional here
         record=True,
+        # the scenario's inputs, so a `$inputs.x` allowlist expands to concrete
+        # destinations rather than governing against the reference string
+        inputs=inputs if inputs is not None else _inputs_for(assignment, trial_unit),
     )
+
+
+def _inputs_for(assignment: dict[str, object], trial_unit: str) -> dict[str, object]:
+    """The declared inputs of the scenario this trial runs."""
+    scenario_id, _, _ = str(trial_unit).rsplit(":", 2)
+    for scenario in assignment.get("scenarios") or []:  # type: ignore[union-attr]
+        if str(scenario.get("name")) == scenario_id:  # type: ignore[union-attr]
+            return dict(scenario.get("inputs") or {})  # type: ignore[union-attr]
+    return {}
 
 
 def planned_trials(assignment: dict[str, object]) -> list[str]:

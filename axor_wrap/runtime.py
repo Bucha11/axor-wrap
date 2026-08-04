@@ -22,7 +22,7 @@ from __future__ import annotations
 import functools
 from typing import Callable
 
-from axor_wrap.compile import governor_kwargs
+from axor_wrap.compile import compile_manifests, governor_kwargs
 
 ENFORCEMENT_ON = "on"
 ENFORCEMENT_OFF = "off"
@@ -75,6 +75,7 @@ class WrappedToolset:
         admission: Callable[[], bool] | None = None,
         enforcement: str = ENFORCEMENT_ON,
         record: bool = False,
+        inputs: dict[str, object] | None = None,
     ) -> None:
         """``governor`` overrides construction (tests / custom kernels); otherwise
         the governor is built lazily-imported from axor-core with the kwargs
@@ -99,10 +100,17 @@ class WrappedToolset:
         :meth:`trace` can emit a ``trace/v1`` document. Off by default: the
         kernel deliberately does not retain raw values, and a long-lived
         production wrap should not either. An experiment trial turns it on,
-        because a trial that cannot produce its trace produces nothing."""
+        because a trial that cannot produce its trace produces nothing.
+
+        ``inputs`` are the scenario's declared inputs, needed to expand a
+        ``$inputs.x`` allowlist reference into concrete destinations. Without
+        them such a policy governs against the reference STRING, which denies
+        every real destination and allows the placeholder."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
-        self.config = governor_kwargs(self.manifests, policy)
+        self.policy = dict(policy) if policy else None
+        self.inputs = dict(inputs) if inputs else None
+        self.config = governor_kwargs(self.manifests, policy, inputs)
         self._governor = governor if governor is not None else _build_governor(self.config)
         self._admission = admission
         if enforcement not in (ENFORCEMENT_ON, ENFORCEMENT_OFF):
@@ -112,6 +120,24 @@ class WrappedToolset:
             )
         self.enforcement = enforcement
         self._recorder = SessionRecorder() if record else None
+
+    def runtime_config_hash(self, kernel: str) -> str:
+        """The fingerprint of the config this session ACTUALLY governed under.
+
+        Lab records it on the trial and recomputes it from the assignment it
+        issued; a mismatch means the runtime governed a different contract than
+        the one it was given, which is exactly what a bundle claiming "this is
+        the config that produced this evidence" must not absorb silently.
+
+        Byte-identical to axor-lab's ``runtime_config_hash`` — the same compiled
+        form, with ``$inputs`` refs expanded, under the same canonicalizer.
+        """
+        from axor_wrap.trace import content_hash
+
+        return content_hash({
+            "kernel": kernel,
+            **compile_manifests(self.manifests, self.policy, self.inputs),
+        })
 
     @property
     def tool_names(self) -> tuple[str, ...]:

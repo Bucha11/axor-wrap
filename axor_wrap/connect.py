@@ -101,6 +101,7 @@ class LabRuntimeConnector:
         trace: dict[str, object] | None,
         status: str = "completed",
         metrics: dict[str, object] | None = None,
+        runtime_config_hash: str | None = None,
     ) -> dict[str, object]:
         """Finalize one trial, uploading its finished trace.
 
@@ -120,6 +121,8 @@ class LabRuntimeConnector:
         body: dict[str, object] = {"trace": trace, "status": status}
         if metrics:
             body["metrics"] = metrics
+        if runtime_config_hash:
+            body["runtime_config_hash"] = runtime_config_hash
         return self._request(
             "POST", f"/runtime/jobs/{job_id}/trials/{trial_id}/complete",
             body, token=self._require_key(),
