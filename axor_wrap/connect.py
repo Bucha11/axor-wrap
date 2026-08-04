@@ -106,8 +106,11 @@ class LabRuntimeConnector:
 
         ``metrics`` carries what only this runtime could measure about the
         trial — wall-clock, steps, tokens, spend. It travels BESIDE the trace
-        rather than inside it: ``trace/v1`` is axor-core-owned and describes
-        what happened, while cost and latency are Lab's experiment metadata.
+        rather than inside it: ``trace/v1`` describes what the KERNEL saw and
+        decided, while cost and latency are the runtime's own measurements.
+
+        Build the trace with ``WrappedToolset.trace()`` — the wrapped session
+        already holds everything it needs.
 
         Omit it and Lab records no measurements for the trial, which is honest
         but leaves a latency or budget invariant unevaluable — Lab does not

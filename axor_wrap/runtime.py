@@ -32,6 +32,21 @@ from axor_wrap.errors import (
     ToolDenied,
     UnknownToolError,
 )
+from axor_wrap.trace import SessionRecorder
+
+
+def _kernel_version() -> str | None:
+    """The pinned identity of the kernel that produced these verdicts.
+
+    Load-bearing on a trace: the same events under a different kernel can yield
+    a different verdict, so a trace that does not name its kernel cannot be
+    replayed against the build that decided it.
+    """
+    try:
+        import axor_core
+    except ImportError:  # pragma: no cover - axor-core is a hard dependency
+        return None
+    return f"axor-core@{getattr(axor_core, '__version__', 'unknown')}"
 
 
 def _build_governor(kwargs: dict[str, object]) -> object:
@@ -59,6 +74,7 @@ class WrappedToolset:
         governor: object | None = None,
         admission: Callable[[], bool] | None = None,
         enforcement: str = ENFORCEMENT_ON,
+        record: bool = False,
     ) -> None:
         """``governor`` overrides construction (tests / custom kernels); otherwise
         the governor is built lazily-imported from axor-core with the kwargs
@@ -77,7 +93,13 @@ class WrappedToolset:
         UNGOVERNED experiment arm needs, and it is not the same as skipping the
         governor: an unwrapped agent produces no ledger, no verdicts, and no way
         to turn governance on later without re-integrating. Switching an arm
-        from ungoverned to governed is this flag and nothing else."""
+        from ungoverned to governed is this flag and nothing else.
+
+        ``record`` keeps each call's raw arguments and result in memory so
+        :meth:`trace` can emit a ``trace/v1`` document. Off by default: the
+        kernel deliberately does not retain raw values, and a long-lived
+        production wrap should not either. An experiment trial turns it on,
+        because a trial that cannot produce its trace produces nothing."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
         self.config = governor_kwargs(self.manifests, policy)
@@ -89,6 +111,7 @@ class WrappedToolset:
                 f"got {enforcement!r}"
             )
         self.enforcement = enforcement
+        self._recorder = SessionRecorder() if record else None
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -134,6 +157,10 @@ class WrappedToolset:
         if self._admission is not None and not self._admission():
             raise AdmissionHeld("paused-or-stopped")
         decision = self._governor.evaluate(name, args)  # type: ignore[attr-defined]
+        # recorded at the moment the kernel is consulted, so the recorder stays
+        # 1:1 and in order with the kernel's own events. A call refused before
+        # this line (unknown tool, admission held) produced no verdict either.
+        recorded = self._recorder.evaluated(name, args) if self._recorder else None
         if not decision.allowed and self.enforcement == ENFORCEMENT_ON:
             raise ToolDenied(decision.reason, decision.category)
         # observe-only: the verdict is recorded and reported, the call proceeds.
@@ -142,7 +169,43 @@ class WrappedToolset:
         # of measuring what an UNGOVERNED agent actually does.
         output = self._tools[name](**args)
         self._governor.register_output(decision, output)  # type: ignore[attr-defined]
+        if recorded is not None:
+            recorded.executed, recorded.result = True, output
         return output
+
+    def trace(
+        self,
+        trial: dict[str, object],
+        *,
+        trace_id: str | None = None,
+        inputs_digest: str | None = None,
+    ) -> dict[str, object]:
+        """This session as a ``trace/v1`` document — what a runtime pushes to Lab.
+
+        Requires ``record=True``: without it the raw arguments and results a
+        trace's value ledger is built from were never kept, and a trace with an
+        empty ledger cannot tie a sink argument back to an untrusted source,
+        which is the one thing it exists to do.
+        """
+        from axor_wrap._version import get_version
+        from axor_wrap.trace import build_trace
+
+        if self._recorder is None:
+            raise ValueError(
+                "this toolset was built without record=True, so no values were kept; "
+                "a trace built from it could carry verdicts but no provenance"
+            )
+        return build_trace(
+            calls=self._recorder.calls,
+            trace_events=self.trace_events,
+            manifests=self.manifests,
+            enforcement=self.enforcement,
+            trial=trial,
+            trace_id=trace_id,
+            kernel_version=_kernel_version(),
+            runtime=f"axor-wrap@{get_version('axor-wrap')}",
+            inputs_digest=inputs_digest,
+        )
 
 
 def wrap_callables(

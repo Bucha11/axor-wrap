@@ -30,6 +30,7 @@ from axor_wrap.experiment import (
     toolset_for_arm,
 )
 from axor_wrap.runtime import ENFORCEMENT_OFF, ENFORCEMENT_ON, WrappedToolset, wrap_callables
+from axor_wrap.trace import TraceBuildError, build_trace, trial_of
 
 __version__ = get_version("axor-wrap")
 
@@ -53,10 +54,12 @@ __all__ = [
     "PlaneConnector",
     "PlaneExtraNotInstalledError",
     "ToolDenied",
+    "TraceBuildError",
     "UnknownToolError",
     "WrappedToolset",
     "__version__",
     "build_manifest",
+    "build_trace",
     "compile_manifests",
     "ensure_valid",
     "governance_yaml",
@@ -64,5 +67,6 @@ __all__ = [
     "infer_effect",
     "scan_project",
     "validate_manifest",
+    "trial_of",
     "wrap_callables",
 ]

@@ -98,6 +98,8 @@ def toolset_for_arm(
     return WrappedToolset(
         tools, list(manifests), policy=policy, governor=governor,
         admission=admission, enforcement=enforcement_of(arm),
+        # a trial exists to produce a trace; recording is not optional here
+        record=True,
     )
 
 
