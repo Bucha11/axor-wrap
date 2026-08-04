@@ -130,6 +130,21 @@ def content_hash(value: object) -> str:
     return f"sha256:{hashlib.sha256(canonicalize(value)).hexdigest()}"
 
 
+def world_digest(
+    inputs: dict[str, Any] | None, fixtures: dict[str, Any] | None,
+) -> str:
+    """The exact world a trace was produced in: the scenario's inputs AND its
+    tool fixtures.
+
+    One definition, shared with axor-lab's `world_digest` — the bundle verifier
+    recomputes it and rejects a trace whose digest does not bind its scenario.
+    A `wrapped_code` trace without one is not bundle-conformant at all, so a
+    runtime that omits it produces traces Lab will collect and then refuse to
+    package.
+    """
+    return content_hash({"inputs": inputs or {}, "fixtures": fixtures or {}})
+
+
 def _preview(value: object) -> str:
     text = value if isinstance(value, str) else repr(value)
     return text[:_PREVIEW_MAX]
@@ -349,6 +364,7 @@ def build_trace(
     trace_id: str | None = None,
     kernel_version: str | None = None,
     runtime: str | None = None,
+    scenario: dict[str, Any] | None = None,
     inputs_digest: str | None = None,
 ) -> dict[str, Any]:
     """A ``trace/v1`` document for one trial — for EITHER way of wrapping.
@@ -414,8 +430,13 @@ def build_trace(
         "events": events,
         "values": ledger.values,
     }
-    if inputs_digest:
-        trace["inputs_digest"] = inputs_digest
+    # `wrapped_code` MUST carry one: it is what binds the trace to the world it
+    # ran in, and verify_bundle refuses the trace without it.
+    digest = inputs_digest
+    if digest is None and scenario is not None:
+        digest = world_digest(scenario.get("inputs"), scenario.get("fixtures"))
+    if digest:
+        trace["inputs_digest"] = digest
     return trace
 
 
@@ -517,6 +538,7 @@ def trace_of_session(
     *,
     manifests: list[dict[str, Any]] | None = None,
     enforcement: str = "on",
+    scenario: dict[str, Any] | None = None,
     trace_id: str | None = None,
     inputs_digest: str | None = None,
 ) -> dict[str, Any]:
@@ -537,6 +559,7 @@ def trace_of_session(
         trace_id=trace_id,
         kernel_version=_kernel_version(),
         runtime=f"axor-wrap@{_wrap_version()}",
+        scenario=scenario,
         inputs_digest=inputs_digest,
     )
 

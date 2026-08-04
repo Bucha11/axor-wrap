@@ -177,10 +177,16 @@ class WrappedToolset:
         self,
         trial: dict[str, object],
         *,
+        scenario: dict[str, object] | None = None,
         trace_id: str | None = None,
         inputs_digest: str | None = None,
     ) -> dict[str, object]:
         """This session as a ``trace/v1`` document — what a runtime pushes to Lab.
+
+        Pass the ``scenario`` this trial ran: a ``wrapped_code`` trace must
+        carry an ``inputs_digest`` binding it to the world it ran in, and
+        ``verify_bundle`` refuses one without it — so a trace built without the
+        scenario is collected happily and then cannot be packaged.
 
         Requires ``record=True``: without it the raw arguments and results a
         trace's value ledger is built from were never kept, and a trace with an
@@ -204,6 +210,7 @@ class WrappedToolset:
             trace_id=trace_id,
             kernel_version=_kernel_version(),
             runtime=f"axor-wrap@{get_version('axor-wrap')}",
+            scenario=scenario,
             inputs_digest=inputs_digest,
         )
 
