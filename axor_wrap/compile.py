@@ -57,6 +57,13 @@ def compile_manifests(
     egress.sort()
     untrusted_sources.sort()
     sensitive_sources.sort()
+    # per-sink consequence-class overrides — the `danger=` knob. Declared in
+    # condition/v1 as `criticality_overrides`; the governor keys its table by
+    # lowercased sink name.
+    overrides = {
+        str(sink).lower(): str(value)
+        for sink, value in ((policy or {}).get("criticality_overrides") or {}).items()
+    }
     value_policies: dict[str, object] = {}
     allowlist = (policy or {}).get("allowlist")
     if allowlist:
@@ -71,6 +78,7 @@ def compile_manifests(
         "untrusted_fields": taint_fields,
         "driving_args": driving,
         "value_policies": value_policies,
+        "consequence_overrides": dict(sorted(overrides.items())),
     }
 
 
@@ -94,6 +102,13 @@ def governor_kwargs(
         kwargs["sensitive_sources"] = set(canon["sensitive_sources"])  # type: ignore[arg-type]
     if canon["value_policies"]:
         kwargs["value_policies"] = canon["value_policies"]
+    if canon["consequence_overrides"]:
+        from axor_core.contracts.canonical import ConsequenceClass
+
+        kwargs["consequence_overrides"] = {
+            sink: ConsequenceClass[str(name).upper()]
+            for sink, name in canon["consequence_overrides"].items()  # type: ignore[union-attr]
+        }
     return kwargs
 
 
