@@ -78,11 +78,38 @@ class RecordedCall:
     result: Any = None
 
 
+EVERY_INTENT = "every_intent"
+EXECUTIONS_ONLY = "executions_only"
+
+
 @dataclass
 class SessionRecorder:
-    """The raw values a trace needs. Verdicts come from the kernel, not here."""
+    """The raw values a trace needs. Verdicts come from the kernel, not here.
+
+    ``observes`` says WHERE in the call the wrapper sits, and the two ways of
+    wrapping an agent genuinely differ:
+
+      - ``every_intent`` — the synchronous path. The wrapper asks the kernel
+        itself, so it sees every intent including the denied ones, and its
+        records line up 1:1 with the kernel's verdicts.
+      - ``executions_only`` — the streaming path. The kernel owns the loop and
+        only hands the wrapper a tool that was already approved, so a denied
+        call never reaches it. Fewer records than verdicts, by construction.
+
+    This is declared rather than inferred from the counts, because inferring it
+    would silently mis-pair a run in which the numbers happen to match — and a
+    mis-paired trace attributes one call's verdict to another call's arguments.
+    """
 
     calls: list[RecordedCall] = field(default_factory=list)
+    observes: str = EVERY_INTENT
+
+    def __post_init__(self) -> None:
+        if self.observes not in (EVERY_INTENT, EXECUTIONS_ONLY):
+            raise ValueError(
+                f"observes must be {EVERY_INTENT!r} or {EXECUTIONS_ONLY!r}, "
+                f"got {self.observes!r}"
+            )
 
     def evaluated(self, tool: str, args: dict[str, Any]) -> RecordedCall:
         call = RecordedCall(tool=tool, args=dict(args))
@@ -268,6 +295,49 @@ def _decision_of(event: Any, arg_bindings: dict[str, str], enforced: bool) -> di
     return decision
 
 
+def _paired(
+    calls: list[RecordedCall], events: list[Any], observes: str,
+) -> list[tuple[RecordedCall | None, Any]]:
+    """Line the wrapper's records up with the kernel's verdicts.
+
+    ``every_intent`` (synchronous path): 1:1, because the wrapper asked the
+    kernel itself and saw every intent including denied ones.
+
+    ``executions_only`` (streaming path): the kernel owns the loop and only
+    hands the wrapper a tool it already approved, so a denied call has a verdict
+    and no record. Approvals consume records in order; denials get ``None`` and
+    the trace says honestly that the wrapper never saw those arguments.
+    """
+    if observes == EVERY_INTENT:
+        if len(calls) != len(events):
+            raise TraceBuildError(
+                f"{len(calls)} recorded call(s) but {len(events)} kernel verdict(s) — "
+                "refusing to emit a trace that would pair a verdict with the wrong call"
+            )
+        return list(zip(calls, events))
+
+    paired: list[tuple[RecordedCall | None, Any]] = []
+    remaining = list(calls)
+    for event in events:
+        denied = str(getattr(event.kind, "value", event.kind)) == "intent_denied"
+        if denied:
+            paired.append((None, event))
+            continue
+        if not remaining:
+            raise TraceBuildError(
+                "the kernel approved more calls than the wrapper recorded — the "
+                "recorder was not installed on every tool, so the trace would "
+                "attribute one call's arguments to another"
+            )
+        paired.append((remaining.pop(0), event))
+    if remaining:
+        raise TraceBuildError(
+            f"{len(remaining)} recorded call(s) have no kernel verdict — a tool ran "
+            "outside the kernel, so this trace cannot claim to describe a governed run"
+        )
+    return paired
+
+
 def build_trace(
     *,
     calls: list[RecordedCall],
@@ -275,46 +345,51 @@ def build_trace(
     manifests: list[dict[str, Any]],
     enforcement: str,
     trial: dict[str, Any],
+    observes: str = EVERY_INTENT,
     trace_id: str | None = None,
     kernel_version: str | None = None,
     runtime: str | None = None,
     inputs_digest: str | None = None,
 ) -> dict[str, Any]:
-    """A ``trace/v1`` document for one trial.
+    """A ``trace/v1`` document for one trial — for EITHER way of wrapping.
 
-    ``calls`` and ``trace_events`` must line up one-to-one and in order: one
-    kernel verdict per gated call. They are built by the same code path, so a
-    mismatch means the session was mutated underneath the recorder — raised
-    rather than papered over, because a misaligned trace attributes one call's
-    verdict to another call's arguments, which is worse than no trace at all.
+    One builder serves both because both are wrapping the same kernel: the
+    verdicts and their provenance come from the kernel's own trace events, which
+    the two paths now record identically. What differs is only where the wrapper
+    sits, and `observes` declares that (see :class:`SessionRecorder`).
+
+    A misalignment raises rather than being papered over: a mis-paired trace
+    attributes one call's verdict to another call's arguments, which is worse
+    than no trace at all.
     """
-    if len(calls) != len(trace_events):
-        raise TraceBuildError(
-            f"{len(calls)} recorded call(s) but {len(trace_events)} kernel verdict(s) — "
-            "refusing to emit a trace that would pair a verdict with the wrong call"
-        )
     by_id = {str(m.get("id")): m for m in manifests}
     ledger = _Ledger()
     events: list[dict[str, Any]] = []
     enforced = enforcement != "off"
     seq = 0
 
-    for index, (call, event) in enumerate(zip(calls, trace_events)):
-        refs: dict[str, Any] = dict((getattr(event, "payload", {}) or {}).get("arg_refs", {}))
+    for index, (call, event) in enumerate(_paired(calls, trace_events, observes)):
+        payload: dict[str, Any] = getattr(event, "payload", {}) or {}
+        refs: dict[str, Any] = dict(payload.get("arg_refs", {}))
+        # a call the wrapper never saw (denied before it reached the tool) has no
+        # raw values to mint. The kernel still recorded WHICH arguments it judged
+        # and what they derived from, and the decision carries that; the trace
+        # binds no value rather than inventing one.
         arg_bindings = {
             name: ledger.mint_argument(call.tool, name, value, refs.get(name, {}))
             for name, value in call.args.items()
-        }
+        } if call is not None else {}
+        tool = call.tool if call is not None else str(payload.get("tool", ""))
         call_id = f"call_{NODE_ROOT}_{index}"
         events.append({"seq": seq, "node": NODE_ROOT, "type": "tool_call_intent",
-                       "tool": call.tool, "call_id": call_id,
+                       "tool": tool, "call_id": call_id,
                        "arg_bindings": arg_bindings})
         seq += 1
         events.append({"seq": seq, "node": NODE_ROOT, "type": "gate_decision",
                        "call_id": call_id,
                        "decision": _decision_of(event, arg_bindings, enforced)})
         seq += 1
-        if call.executed:
+        if call is not None and call.executed:
             produced = _mint_untrusted_fields(
                 ledger, by_id.get(call.tool, {}), call.tool, call.result,
             )
@@ -370,3 +445,109 @@ def trial_of(trial_unit: str, run_id: str, seed: str | None = None) -> dict[str,
         "seed": seed if seed is not None else f"s{repeat_index:03d}",
         "repeat_index": repeat_index,
     }
+
+
+# ── the streaming path (GovernedSession / IntentLoop) ────────────────────────
+
+
+def record_tools(
+    tools: dict[str, Any], recorder: SessionRecorder,
+) -> dict[str, Any]:
+    """Tool callables that RECORD what the kernel executed. They do not gate.
+
+    This is the streaming path's half of "both ways of wrapping write their
+    trace here". A ``GovernedSession`` owns the loop and its ``IntentLoop``
+    already ran every gate before handing the tool over — wrapping these in a
+    second governor would be a second decision path, gating a call the kernel
+    has already judged and producing two verdicts for one intent. So these only
+    capture the raw values the kernel deliberately does not retain.
+
+    Pair with ``trace_of_session``. The recorder must be
+    ``observes=EXECUTIONS_ONLY``: a denied call never reaches a tool, so its
+    record simply does not exist.
+    """
+    import functools
+
+    if recorder.observes != EXECUTIONS_ONLY:
+        raise TraceBuildError(
+            f"a streaming-path recorder must be {EXECUTIONS_ONLY!r}: the kernel only "
+            f"hands over tools it already approved, so the wrapper cannot see a "
+            f"denied call and its records will not line up 1:1 with the verdicts"
+        )
+
+    def _wrap(name: str, fn: Any) -> Any:
+        @functools.wraps(fn)
+        def recorded(**kwargs: Any) -> Any:
+            call = recorder.evaluated(name, kwargs)
+            result = fn(**kwargs)
+            call.executed, call.result = True, result
+            return result
+
+        return recorded
+
+    return {name: _wrap(name, fn) for name, fn in tools.items()}
+
+
+def verdicts_of(session: Any) -> list[Any]:
+    """The kernel's tool-call verdicts from a ``GovernedSession``, in order.
+
+    A session's traces carry every kind of event the node tree produced —
+    tokens spent, spawns, degradation. A trace's decisions are the tool-call
+    verdicts, so the rest is filtered out here rather than by each caller
+    guessing which kinds count.
+    """
+    from axor_core.contracts.trace import TraceEventKind
+
+    verdict_kinds = {
+        TraceEventKind.INTENT_APPROVED,
+        TraceEventKind.INTENT_TRANSFORMED,
+        TraceEventKind.INTENT_DENIED,
+    }
+    events: list[Any] = []
+    for trace in session.all_traces():
+        events.extend(e for e in trace.events if e.kind in verdict_kinds)
+    events.sort(key=lambda e: e.sequence)
+    return events
+
+
+def trace_of_session(
+    session: Any,
+    recorder: SessionRecorder,
+    trial: dict[str, Any],
+    *,
+    manifests: list[dict[str, Any]] | None = None,
+    enforcement: str = "on",
+    trace_id: str | None = None,
+    inputs_digest: str | None = None,
+) -> dict[str, Any]:
+    """A ``GovernedSession``'s run as ``trace/v1`` — the SAME builder path B uses.
+
+    Deliberately not a second builder. The two wrapping paths record identical
+    verdicts and identical provenance (axor-core's shared ``call_payload``), so
+    one construction serves both; a separate one would drift and become the
+    third path nobody wants.
+    """
+    return build_trace(
+        calls=recorder.calls,
+        trace_events=verdicts_of(session),
+        manifests=list(manifests or []),
+        enforcement=enforcement,
+        trial=trial,
+        observes=EXECUTIONS_ONLY,
+        trace_id=trace_id,
+        kernel_version=_kernel_version(),
+        runtime=f"axor-wrap@{_wrap_version()}",
+        inputs_digest=inputs_digest,
+    )
+
+
+def _kernel_version() -> str | None:
+    from axor_wrap.runtime import _kernel_version as version
+
+    return version()
+
+
+def _wrap_version() -> str:
+    from axor_wrap._version import get_version
+
+    return get_version("axor-wrap")
