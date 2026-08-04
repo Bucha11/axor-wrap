@@ -101,7 +101,19 @@ def governor_kwargs(
     if canon["sensitive_sources"]:
         kwargs["sensitive_sources"] = set(canon["sensitive_sources"])  # type: ignore[arg-type]
     if canon["value_policies"]:
-        kwargs["value_policies"] = canon["value_policies"]
+        # axor-core wants dict[str, list[ValuePredicate]] — objects with
+        # `.check()`. Handing it the nested `{sink: {arg: {"enum": [...]}}}` made
+        # `check_value_policies` iterate a dict and get its KEYS, so the first
+        # "predicate" was the string "recipient" and the call died on
+        # `'str' object has no attribute 'check'`. Every policy carrying an
+        # allowlist crashed the governor — including the enum-supersession path
+        # this module describes as the sound, paraphrase-proof control.
+        from axor_core.policy.value_policy import enum as enum_predicate
+
+        kwargs["value_policies"] = {
+            sink: [enum_predicate(arg, list(spec["enum"])) for arg, spec in by_arg.items()]
+            for sink, by_arg in canon["value_policies"].items()  # type: ignore[union-attr]
+        }
     if canon["consequence_overrides"]:
         from axor_core.contracts.canonical import ConsequenceClass
 
