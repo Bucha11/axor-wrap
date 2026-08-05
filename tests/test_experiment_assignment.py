@@ -189,7 +189,7 @@ class TestTheArmsDifferByOneFlag(unittest.TestCase):
 
         self.assertEqual(ungoverned_verdicts, governed_verdicts,
                          "the kernel judged both arms identically")
-        self.assertEqual(ungoverned_verdicts, ['intent_approved', 'intent_denied'])
+        self.assertEqual(ungoverned_verdicts, ['intent_approved', 'taint_propagated', 'intent_denied'])
         self.assertFalse(ungoverned_blocked)
         self.assertEqual(len(ungoverned_sent), 1)
         self.assertTrue(governed_blocked)

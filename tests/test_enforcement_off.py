@@ -241,13 +241,13 @@ class TestAgainstTheRealKernel(unittest.TestCase):
         toolset, sent, blocked = self._drive(ENFORCEMENT_ON)
         self.assertTrue(blocked)
         self.assertEqual(sent, [])
-        self.assertEqual([e.kind.value for e in toolset.trace_events], ['intent_approved', 'intent_denied'])
+        self.assertEqual([e.kind.value for e in toolset.trace_events], ['intent_approved', 'taint_propagated', 'intent_denied'])
 
     def test_observe_only_reaches_the_same_verdict_but_lets_it_through(self) -> None:
         toolset, sent, blocked = self._drive(ENFORCEMENT_OFF)
         self.assertFalse(blocked)
         self.assertEqual(len(sent), 1, "the ungoverned arm records what the agent DID")
-        self.assertEqual([e.kind.value for e in toolset.trace_events], ['intent_approved', 'intent_denied'])
+        self.assertEqual([e.kind.value for e in toolset.trace_events], ['intent_approved', 'taint_propagated', 'intent_denied'])
 
     def test_both_arms_agree_on_every_verdict(self) -> None:
         """The claim the whole comparison rests on: the kernel decided the same

@@ -312,6 +312,27 @@ def _decision_of(event: Any, arg_bindings: dict[str, str], enforced: bool) -> di
     return decision
 
 
+def verdict_events(events: list[Any]) -> list[Any]:
+    """Only the tool-call verdicts, in order.
+
+    A kernel trace is not a list of verdicts: it also carries the SOURCE events
+    that say where taint entered, plus tokens, spawns and degradation. Those are
+    load-bearing for the plane (the replay fold needs them to resolve value
+    refs), which is why the runtime hands out the whole record — but a trace/v1
+    decision pairs 1:1 with a recorded CALL, so anything that is not a verdict
+    has to come out here. Leaving it in shifted the pairing by one and
+    `build_trace` refused the trace outright.
+    """
+    from axor_core.contracts.trace import TraceEventKind
+
+    kinds = {
+        TraceEventKind.INTENT_APPROVED,
+        TraceEventKind.INTENT_TRANSFORMED,
+        TraceEventKind.INTENT_DENIED,
+    }
+    return [e for e in events if getattr(e, "kind", None) in kinds]
+
+
 def _paired(
     calls: list[RecordedCall], events: list[Any], observes: str,
 ) -> list[tuple[RecordedCall | None, Any]]:
@@ -380,6 +401,7 @@ def build_trace(
     attributes one call's verdict to another call's arguments, which is worse
     than no trace at all.
     """
+    trace_events = verdict_events(trace_events)
     by_id = {str(m.get("id")): m for m in manifests}
     ledger = _Ledger()
     events: list[dict[str, Any]] = []
@@ -519,16 +541,9 @@ def verdicts_of(session: Any) -> list[Any]:
     verdicts, so the rest is filtered out here rather than by each caller
     guessing which kinds count.
     """
-    from axor_core.contracts.trace import TraceEventKind
-
-    verdict_kinds = {
-        TraceEventKind.INTENT_APPROVED,
-        TraceEventKind.INTENT_TRANSFORMED,
-        TraceEventKind.INTENT_DENIED,
-    }
     events: list[Any] = []
     for trace in session.all_traces():
-        events.extend(e for e in trace.events if e.kind in verdict_kinds)
+        events.extend(verdict_events(list(trace.events)))
     events.sort(key=lambda e: e.sequence)
     return events
 

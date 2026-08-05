@@ -56,10 +56,31 @@ def trace_event_to_kernel(event: TraceEvent, node_id: str | None = None) -> Even
     seq = event.sequence
 
     if isinstance(event, IntentDeniedEvent):
+        category = str(event.payload.get("category") or "") or _category_of(event.reason)
+        gate = _gate_of(category)
+        if event.intent_kind == "tool_call":
+            # A refused tool call is a TOOL_CALL with verdict DENY — that is what
+            # the event schema says ("`verdict` … is the recorded overall gate
+            # verdict for this call; `gate` is the denying gate's category if
+            # denied"), what `replay` re-gates, and the only form a consumer can
+            # replay. Mapping it to EventKind.DENIAL instead threw away the whole
+            # payload the kernel had just recorded — the tool, the arguments, the
+            # per-argument provenance, the driving root — and rebuilt it as
+            # {reason, intent_kind}. The replay fold has no DENIAL branch, so the
+            # call vanished from the fold entirely; the Control Plane's converter
+            # has no trace/v1 representation for the kind and refused the run.
+            return Event(
+                seq=seq, node_id=nid, kind=EventKind.TOOL_CALL, ts=_ts(seq),
+                gate=gate, verdict=Verdict.DENY,
+                payload={**event.payload, "reason": event.reason},
+            )
+        # Everything else the kernel refuses (a spawn, a message) is not a tool
+        # call and must not be dressed as one — DENIAL keeps it honest.
         return Event(
             seq=seq, node_id=nid, kind=EventKind.DENIAL, ts=_ts(seq),
-            gate=_category_of(event.reason), verdict=Verdict.DENY,
-            payload={"reason": event.reason, "intent_kind": event.intent_kind},
+            gate=gate, verdict=Verdict.DENY,
+            payload={**event.payload, "reason": event.reason,
+                     "category": category, "intent_kind": event.intent_kind},
         )
     if isinstance(event, DegradationTransitionEvent):
         d = asdict(event)
@@ -90,9 +111,17 @@ def trace_event_to_kernel(event: TraceEvent, node_id: str | None = None) -> Even
             },
         )
     if isinstance(event, TaintPropagatedEvent):
+        # The run's SOURCE event. This branch existed and was unreachable: nothing
+        # in axor-core ever constructed a TaintPropagatedEvent, so every bridged
+        # trace arrived with verdicts and no origin — nothing for the fold to put
+        # in `tainted_refs`, and the Control Plane refusing the run outright ("no
+        # untrusted source in the recorded run (no tool_result)").
+        #
+        # `causal_root` is the value ref this event is about. It read `source_id`,
+        # a field this event class does not have, so it was always None.
         return Event(
             seq=seq, node_id=nid, kind=EventKind.TOOL_RESULT, ts=_ts(seq),
-            causal_root=asdict(event).get("source_id"),
+            causal_root=event.payload.get("value_ref"),
             payload=dict(event.payload),
         )
     if isinstance(event, SuspiciousIntentEvent):
@@ -152,19 +181,45 @@ def trace_event_to_kernel(event: TraceEvent, node_id: str | None = None) -> Even
             payload={"reason": event.reason, "detail": event.detail},
         ) if "control plane" in event.detail else None
 
-    # Approvals and cosmetic adapter events (tokens/cache/routing) are not
-    # replayed as governance steps; they stay in the local trace only.
-    if event.kind is TraceEventKind.INTENT_APPROVED:
+    # An approved call — and a TRANSFORMED one, which is also an executed call
+    # (with rewritten arguments) and was silently dropped here: the run's most
+    # interesting allow, the one the kernel changed, left no TOOL_CALL for the
+    # fold to re-gate.
+    if event.kind in (
+        TraceEventKind.INTENT_APPROVED, TraceEventKind.INTENT_TRANSFORMED,
+    ):
         return Event(
             seq=seq, node_id=nid, kind=EventKind.TOOL_CALL, ts=_ts(seq),
             verdict=Verdict.PASS, payload=dict(event.payload),
         )
+    # Cosmetic adapter events (tokens/cache/routing) carry no governance meaning
+    # and stay in the local trace only.
     return None
 
 
+def _gate_of(category: str) -> str:
+    """The gate name a denial category maps to, from axor-core's own table.
+
+    The kernel exports ``GATE_OF_CATEGORY`` precisely so consumers stop keeping
+    private copies; a category it does not know is passed through rather than
+    raising, because a bridge that drops an event on an unrecognised label
+    silently loses a denial — the one thing a governance trace must never do.
+    """
+    from axor_core.governor import GATE_OF_CATEGORY
+
+    return GATE_OF_CATEGORY.get(category, category or "denial")
+
+
 def _category_of(reason: str) -> str:
-    """Coarse gate category from a denial reason (mirrors the runtime's own
-    _classify_denial, kept in sync with the gate category strings)."""
+    """LAST-RESORT category for a denial that carries none.
+
+    Guessing a gate from substrings of a human-readable reason string is not a
+    mapping, it is a coincidence: reword a reason and the gate silently changes.
+    Every denial axor-core records now carries ``payload["category"]``, the
+    kernel's own label, and that is what the bridge reads. This stays only for a
+    trace recorded by an older build — and it returns the category, which
+    :func:`_gate_of` then maps, so there is one gate table, not two.
+    """
     lowered = reason.lower()
     for needle, cat in (
         ("taint", "taint_enforcement"), ("carrier", "carrier_gate"),
