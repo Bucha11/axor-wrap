@@ -63,9 +63,14 @@ class LabRuntimeConnector:
 
     # ── registration (control surface) ───────────────────────────────────────
 
-    def connect(self, model: str = "", agent_ref: str | None = None) -> dict[str, object]:
-        """POST /runtimes/connect → stores and returns {runtime_ref, ingest_key}."""
-        body: dict[str, object] = {"model": model}
+    def connect(self, runtime_label: str = "", agent_ref: str | None = None) -> dict[str, object]:
+        """POST /runtimes/connect → stores and returns {runtime_ref, ingest_key}.
+
+        `runtime_label` is a free-form display name for this connection; Lab does
+        not call any model — this runtime makes its own inference calls and posts
+        results back. The label only helps identify the connection in the UI.
+        """
+        body: dict[str, object] = {"runtime_label": runtime_label}
         if agent_ref is not None:
             body["agent_ref"] = agent_ref
         payload = self._request("POST", "/runtimes/connect", body, token=self._control_token)

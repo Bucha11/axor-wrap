@@ -115,11 +115,11 @@ class ConnectTest(unittest.TestCase):
 
     def test_full_handshake(self) -> None:
         connector = self.connector()
-        payload = connector.connect(model="claude-fable-5", agent_ref="agent@1")
+        payload = connector.connect(runtime_label="claude-fable-5", agent_ref="agent@1")
         self.assertEqual(payload["runtime_ref"], "rt_0001")
         self.assertEqual(connector.runtime_ref, "rt_0001")
         self.assertEqual(connector.ingest_key, INGEST_KEY)
-        self.assertIn({"model": "claude-fable-5", "agent_ref": "agent@1"}, self.state.connected)
+        self.assertIn({"runtime_label": "claude-fable-5", "agent_ref": "agent@1"}, self.state.connected)
 
         jobs = connector.poll_jobs()
         self.assertEqual(jobs[0]["job_id"], "run_0001")
@@ -140,7 +140,7 @@ class ConnectTest(unittest.TestCase):
     def test_connect_requires_control_token(self) -> None:
         connector = LabRuntimeConnector(self.base_url, control_token="wrong")
         with self.assertRaises(ConnectorError) as ctx:
-            connector.connect(model="m")
+            connector.connect(runtime_label="m")
         self.assertEqual(ctx.exception.status, 401)
 
     def test_runtime_calls_before_connect_fail_honestly(self) -> None:
@@ -159,7 +159,7 @@ class ConnectTest(unittest.TestCase):
     def test_unreachable_server_is_transport_error(self) -> None:
         connector = LabRuntimeConnector("http://127.0.0.1:1", control_token="t", timeout=0.5)
         with self.assertRaises(ConnectorError) as ctx:
-            connector.connect(model="m")
+            connector.connect(runtime_label="m")
         self.assertEqual(ctx.exception.status, 0)
 
 
