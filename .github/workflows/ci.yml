@@ -6,6 +6,12 @@ on:
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
+  # Re-run when a new axor-core is published: it is a required dependency and
+  # the wrapped runtime reads the kernel's trace surface, so a release can
+  # change what this package produces. axor-core's publish job fans this out.
+  repository_dispatch:
+    types: [axor-core-published]
+  workflow_dispatch:
 
 jobs:
   test:
