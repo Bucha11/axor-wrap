@@ -21,12 +21,20 @@ class ManifestValidationError(AxorWrapError):
 
 
 class KernelNotInstalledError(AxorWrapError, ImportError):
-    """axor-core is required for runtime wrapping but is not installed."""
+    """axor-core could not be imported.
+
+    axor-core is a REQUIRED dependency, so reaching this is a broken
+    environment rather than a missing opt-in — there is no extra to install.
+    The import stays lazy (it lets a test inject a governor, and keeps import
+    cost off the scanner path), so this still needs to be a clear message
+    rather than a raw ImportError from somewhere inside the call.
+    """
 
     def __init__(self) -> None:
         super().__init__(
-            "axor-core is not installed — the wrapped runtime needs the real kernel. "
-            "Install the extra: pip install 'axor-wrap[kernel]'"
+            "axor-core could not be imported — the wrapped runtime needs the real "
+            "kernel, and axor-core is a required dependency of axor-wrap. The "
+            "install is broken: reinstall with pip install --force-reinstall axor-wrap"
         )
 
 

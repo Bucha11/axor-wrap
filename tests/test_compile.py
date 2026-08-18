@@ -113,3 +113,70 @@ class CompileTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheCompiledConfigIsACTUALLYUsableByTheKernel(unittest.TestCase):
+    """The tests above check the SHAPE of what we compile. That is not enough:
+    every one of them passed while `value_policies` was a shape the governor
+    could not consume at all.
+
+    axor-core wants `dict[str, list[ValuePredicate]]` — objects with `.check()`.
+    We handed it the nested `{sink: {arg: {"enum": [...]}}}`, so
+    `check_value_policies` iterated a dict, got its KEYS, and died on
+    `'str' object has no attribute 'check'`. Every policy carrying an allowlist
+    crashed the governor, including the enum-supersession path this module
+    describes as the sound, paraphrase-proof control.
+
+    So these construct a real `ToolCallGovernor` and call it. A config that only
+    LOOKS right is not a config.
+    """
+
+    ALLOWED = "alice@corp.com"
+    ATTACKER = "attacker@evil.example"
+
+    def _governor(self, policy: dict[str, object] | None = None):
+        from axor_core.governor import ToolCallGovernor
+
+        return ToolCallGovernor(**governor_kwargs(MANIFESTS, policy))  # type: ignore[arg-type]
+
+    def test_the_governor_accepts_every_compiled_field(self) -> None:
+        self._governor({"allowlist": [self.ALLOWED],
+                        "criticality_overrides": {"send_email": "REVERSIBLE"}})
+
+    def test_a_value_policy_actually_denies_an_unlisted_destination(self) -> None:
+        decision = self._governor({"allowlist": [self.ALLOWED]}).evaluate(
+            "send_email", {"to": self.ATTACKER},
+        )
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.category, "value_policy")
+
+    def test_it_allows_a_listed_destination(self) -> None:
+        self.assertTrue(
+            self._governor({"allowlist": [self.ALLOWED]})
+            .evaluate("send_email", {"to": self.ALLOWED}).allowed,
+        )
+
+    def test_enum_supersession_lets_a_tainted_but_listed_value_through(self) -> None:
+        """The point of an allowlist: an operator-declared destination survives
+        the taint floor, because the destination set is attacker-inaccessible."""
+        governor = self._governor({"allowlist": [self.ALLOWED]})
+        read = governor.evaluate("search_web", {})
+        governor.register_output(read, f"contact {self.ALLOWED} urgently")
+        self.assertTrue(governor.evaluate("send_email", {"to": self.ALLOWED}).allowed)
+
+    def test_without_the_allowlist_the_same_tainted_value_is_denied(self) -> None:
+        """The control has to be what makes the difference, not the taint engine
+        happening to miss it."""
+        governor = self._governor()
+        read = governor.evaluate("search_web", {})
+        governor.register_output(read, f"contact {self.ALLOWED} urgently")
+        decision = governor.evaluate("send_email", {"to": self.ALLOWED})
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.category, "taint_enforcement")
+
+    def test_a_criticality_override_actually_denies(self) -> None:
+        decision = self._governor(
+            {"criticality_overrides": {"send_email": "CATASTROPHIC"}},
+        ).evaluate("send_email", {"to": self.ALLOWED})
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.category, "consequence_gate")

@@ -147,21 +147,23 @@ def axor_core_unimportable():
 
 
 class LazyKernelImportTest(unittest.TestCase):
-    """The kernel is imported lazily, so a wrap-only install must fail with an
-    actionable error rather than an ImportError traceback."""
+    """The kernel import is lazy, so a broken environment must fail with an
+    actionable error rather than an ImportError traceback from inside a call."""
 
-    def test_missing_kernel_raises_actionable_error(self) -> None:
-        # Blocked explicitly rather than asserting axor-core is absent from the
-        # environment: this package now ships axor_wrap.plane, whose tests
-        # REQUIRE axor-core, so "not installed" is no longer a property the test
-        # run can assume. The blocker makes the missing-kernel path testable in
-        # every environment, including the monorepo checkout.
+    def test_unimportable_kernel_raises_actionable_error(self) -> None:
+        # axor-core is a REQUIRED dependency now, so this is a broken install
+        # rather than a missing opt-in — there is no extra to suggest. Blocked
+        # explicitly rather than asserting axor-core is absent: it is present in
+        # every supported environment, so "not installed" is not a property the
+        # test run can assume.
         with axor_core_unimportable():
             tools = make_tools()
             tools.pop("_calls")
             with self.assertRaises(KernelNotInstalledError) as ctx:
                 WrappedToolset(tools, MANIFESTS)  # type: ignore[arg-type]
-        self.assertIn("axor-wrap[kernel]", str(ctx.exception))
+        message = str(ctx.exception)
+        self.assertIn("required dependency", message)
+        self.assertNotIn("[kernel]", message, "the kernel extra no longer exists")
 
     def test_monkeypatched_axor_core_module_is_used(self) -> None:
         """Inject a fake axor_core.governor module: the lazy import must pick it up

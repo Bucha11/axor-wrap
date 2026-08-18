@@ -63,9 +63,14 @@ class LabRuntimeConnector:
 
     # ── registration (control surface) ───────────────────────────────────────
 
-    def connect(self, model: str = "", agent_ref: str | None = None) -> dict[str, object]:
-        """POST /runtimes/connect → stores and returns {runtime_ref, ingest_key}."""
-        body: dict[str, object] = {"model": model}
+    def connect(self, runtime_label: str = "", agent_ref: str | None = None) -> dict[str, object]:
+        """POST /runtimes/connect → stores and returns {runtime_ref, ingest_key}.
+
+        `runtime_label` is a free-form display name for this connection; Lab does
+        not call any model — this runtime makes its own inference calls and posts
+        results back. The label only helps identify the connection in the UI.
+        """
+        body: dict[str, object] = {"runtime_label": runtime_label}
         if agent_ref is not None:
             body["agent_ref"] = agent_ref
         payload = self._request("POST", "/runtimes/connect", body, token=self._control_token)
@@ -100,11 +105,32 @@ class LabRuntimeConnector:
         trial_id: str,
         trace: dict[str, object] | None,
         status: str = "completed",
+        metrics: dict[str, object] | None = None,
+        runtime_config_hash: str | None = None,
     ) -> dict[str, object]:
-        """Finalize one trial, uploading its finished trace."""
+        """Finalize one trial, uploading its finished trace.
+
+        ``metrics`` carries what only this runtime could measure about the
+        trial — wall-clock, steps, tokens, spend. It travels BESIDE the trace
+        rather than inside it: ``trace/v1`` describes what the KERNEL saw and
+        decided, while cost and latency are the runtime's own measurements.
+
+        Build the trace with ``WrappedToolset.trace()`` — the wrapped session
+        already holds everything it needs.
+
+        Omit it and Lab records no measurements for the trial, which is honest
+        but leaves a latency or budget invariant unevaluable — Lab does not
+        time a run on someone else's machine, and it will not invent a number
+        it did not observe.
+        """
+        body: dict[str, object] = {"trace": trace, "status": status}
+        if metrics:
+            body["metrics"] = metrics
+        if runtime_config_hash:
+            body["runtime_config_hash"] = runtime_config_hash
         return self._request(
             "POST", f"/runtime/jobs/{job_id}/trials/{trial_id}/complete",
-            {"trace": trace, "status": status}, token=self._require_key(),
+            body, token=self._require_key(),
         )
 
     # ── transport ────────────────────────────────────────────────────────────

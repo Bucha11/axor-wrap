@@ -3,7 +3,7 @@
     axor-wrap scan <path>                     table of detected tools + effect guesses
     axor-wrap manifest <path> -o <dir>        one manifest per tool + wrap.json sidecar
     axor-wrap config <manifests-dir>          governance YAML to stdout
-    axor-wrap connect-lab --base-url ... --model ...   register a Lab runtime
+    axor-wrap connect-lab --base-url ... --runtime-label ...  register a Lab runtime
 
 Exit codes: 0 ok; 2 nothing found / bad input.
 """
@@ -59,7 +59,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_lab = sub.add_parser("connect-lab", help="register this runtime with an axor-lab server")
     p_lab.add_argument("--base-url", required=True)
-    p_lab.add_argument("--model", required=True)
+    # a display name for the connection; Lab does not call any model. `--model`
+    # is kept as a deprecated alias for older scripts.
+    p_lab.add_argument("--runtime-label", "--model", dest="runtime_label", required=True)
     p_lab.add_argument("--agent-ref", default=None)
     p_lab.add_argument("--control-token", default=None)
     return parser
@@ -162,7 +164,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
 def _cmd_connect_lab(args: argparse.Namespace) -> int:
     connector = LabRuntimeConnector(args.base_url, control_token=args.control_token)
     try:
-        payload = connector.connect(model=args.model, agent_ref=args.agent_ref)
+        payload = connector.connect(runtime_label=args.runtime_label, agent_ref=args.agent_ref)
     except ConnectorError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_EMPTY

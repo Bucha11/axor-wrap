@@ -6,6 +6,12 @@ on:
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
+  # Re-run when a new axor-core is published: it is a required dependency and
+  # the wrapped runtime reads the kernel's trace surface, so a release can
+  # change what this package produces. axor-core's publish job fans this out.
+  repository_dispatch:
+    types: [axor-core-published]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -24,12 +30,14 @@ jobs:
           cache: pip
 
       - name: Install
-        # axor_wrap.plane needs axor-core >=0.10, which is not on PyPI yet
-        # (locally resolved via [tool.uv.sources]), so install it from git and
-        # the plane transport deps directly instead of the [plane] extra.
+        # axor-core is a REQUIRED dependency, but 0.10 is not on PyPI yet
+        # (locally resolved via [tool.uv.sources]), so it must be installed from
+        # git BEFORE the editable install — otherwise pip tries to resolve the
+        # requirement from PyPI and the whole install fails. The plane transport
+        # deps go in directly rather than via the [plane] extra.
         run: |
-          pip install -e ".[dev]"
           pip install "axor-core @ git+https://github.com/Bucha11/axor-core@main"
+          pip install -e ".[dev]"
           pip install "httpx>=0.27" "cryptography>=42.0"
 
       - name: Lint

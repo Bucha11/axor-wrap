@@ -28,9 +28,39 @@ EGRESS_CLASSES = frozenset({"EXPORT", "EXEC"})  # same as lab_contracts.semantic
 _DEFAULT_ALLOWLIST_ARG = "recipient"
 
 
+_INPUT_REF = "$inputs."
+
+
+def _expand(items: list[object], inputs: dict[str, object] | None) -> list[object]:
+    """Resolve ``$inputs.x`` allowlist refs against the scenario's inputs.
+
+    An UNRESOLVED ref is refused, never passed through. Passing it through is
+    what this did, and the result was that the only destination the value policy
+    admitted was the literal string ``"$inputs.known_ibans"`` — every real
+    destination was denied and a placeholder was allowed. Mirrors axor-lab's
+    ``expand_list``: a ref naming a list splices.
+    """
+    out: list[object] = []
+    for item in items:
+        if not (isinstance(item, str) and item.startswith(_INPUT_REF)):
+            out.append(item)
+            continue
+        key = item[len(_INPUT_REF):]
+        if inputs is None or key not in inputs:
+            raise ValueError(
+                f"allowlist references {item!r} but no such input was supplied — "
+                f"refusing to govern against the unresolved reference itself, which "
+                f"would deny every real destination and allow the placeholder"
+            )
+        value = inputs[key]
+        out.extend(value) if isinstance(value, list) else out.append(value)
+    return out
+
+
 def compile_manifests(
     manifests: list[dict[str, object]],
     policy: dict[str, object] | None = None,
+    inputs: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """The canonical compilation (mirrors lab's ``compiled_governor_config``)."""
     egress: list[str] = []
@@ -57,10 +87,17 @@ def compile_manifests(
     egress.sort()
     untrusted_sources.sort()
     sensitive_sources.sort()
+    # per-sink consequence-class overrides — the `danger=` knob. Declared in
+    # condition/v1 as `criticality_overrides`; the governor keys its table by
+    # lowercased sink name.
+    overrides = {
+        str(sink).lower(): str(value)
+        for sink, value in ((policy or {}).get("criticality_overrides") or {}).items()
+    }
     value_policies: dict[str, object] = {}
     allowlist = (policy or {}).get("allowlist")
     if allowlist:
-        resolved = [str(v) for v in allowlist]  # type: ignore[union-attr]
+        resolved = [str(v) for v in _expand(list(allowlist), inputs)]  # type: ignore[union-attr]
         for sink in egress:
             arg = (driving.get(sink) or [_DEFAULT_ALLOWLIST_ARG])[0]
             value_policies[sink] = {arg: {"enum": resolved}}
@@ -71,12 +108,14 @@ def compile_manifests(
         "untrusted_fields": taint_fields,
         "driving_args": driving,
         "value_policies": value_policies,
+        "consequence_overrides": dict(sorted(overrides.items())),
     }
 
 
 def governor_kwargs(
     manifests: list[dict[str, object]],
     policy: dict[str, object] | None = None,
+    inputs: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Kwargs to splat into ``axor_core.governor.ToolCallGovernor(**kwargs)``.
 
@@ -84,7 +123,7 @@ def governor_kwargs(
     per-field ``untrusted_fields`` map is not a governor kwarg and stays in
     ``compile_manifests`` output only.
     """
-    canon = compile_manifests(manifests, policy)
+    canon = compile_manifests(manifests, policy, inputs)
     kwargs: dict[str, object] = {
         "egress_sinks": set(canon["egress_sinks"]),  # type: ignore[arg-type]
         "untrusted_sources": set(canon["untrusted_sources"]),  # type: ignore[arg-type]
@@ -93,7 +132,26 @@ def governor_kwargs(
     if canon["sensitive_sources"]:
         kwargs["sensitive_sources"] = set(canon["sensitive_sources"])  # type: ignore[arg-type]
     if canon["value_policies"]:
-        kwargs["value_policies"] = canon["value_policies"]
+        # axor-core wants dict[str, list[ValuePredicate]] — objects with
+        # `.check()`. Handing it the nested `{sink: {arg: {"enum": [...]}}}` made
+        # `check_value_policies` iterate a dict and get its KEYS, so the first
+        # "predicate" was the string "recipient" and the call died on
+        # `'str' object has no attribute 'check'`. Every policy carrying an
+        # allowlist crashed the governor — including the enum-supersession path
+        # this module describes as the sound, paraphrase-proof control.
+        from axor_core.policy.value_policy import enum as enum_predicate
+
+        kwargs["value_policies"] = {
+            sink: [enum_predicate(arg, list(spec["enum"])) for arg, spec in by_arg.items()]
+            for sink, by_arg in canon["value_policies"].items()  # type: ignore[union-attr]
+        }
+    if canon["consequence_overrides"]:
+        from axor_core.contracts.canonical import ConsequenceClass
+
+        kwargs["consequence_overrides"] = {
+            sink: ConsequenceClass[str(name).upper()]
+            for sink, name in canon["consequence_overrides"].items()  # type: ignore[union-attr]
+        }
     return kwargs
 
 
