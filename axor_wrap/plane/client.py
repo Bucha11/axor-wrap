@@ -14,14 +14,28 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import uuid
 from collections.abc import Callable
 
 from axor_wrap.plane.session import PlaneSession
 
+log = logging.getLogger("axor.wrap.plane")
+
 HEARTBEAT_PERIOD = 10.0  # protocol section 9: static T=10s, stale=3T
+# Minimum gap between desired-state reconnections, so a stream that ends
+# instantly cannot become a reconnect storm.
+RECONNECT_DELAY = 1.0
 _TELEMETRY_ATTEMPTS = 3   # in-flush retries before falling back to the spool
+
+
+class _AuthRejected(Exception):
+    """The plane refused this node's credential (401/403)."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"plane rejected the node credential: {status}")
+        self.status = status
 
 
 def _httpx():  # noqa: ANN202 - module import guard
@@ -45,6 +59,7 @@ class PlaneClient:
         hold_on_disconnect_after: float | None = None,
         heartbeat_period: float = HEARTBEAT_PERIOD,
         spool_path: str | None = None,
+        ingest_key: str | None = None,
     ) -> None:
         self._base = backend_url.rstrip("/")
         self.session = session
@@ -57,7 +72,30 @@ class PlaneClient:
         # process restart. None keeps axor-core's zero-config default (in-memory
         # only), which is what a short-lived run wants.
         self._spool_path = spool_path
+        # Credential for the plane channel. The backend's auth is opt-in (unset
+        # AXOR_API_TOKEN = open), and this client sent nothing at all — so the
+        # moment an operator turned auth ON, every governed node's telemetry,
+        # desired-state subscription and health check started answering 401 and
+        # the whole channel went quiet. Quiet is exactly what a plane cannot be:
+        # a node that cannot heartbeat looks identical to a node that died.
+        #
+        # A scoped `ingest` key, ideally bound to THIS node (the backend refuses
+        # a bound key posting as any other), is what belongs here — never the
+        # operator master token, which the node has no business holding.
+        self._ingest_key = ingest_key
         self._seq = 0
+
+    def _auth(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        """Headers for one plane call: the bearer when configured, plus extras.
+
+        Absent a key the headers are empty, which is correct against a backend
+        with auth off — the open dev posture — and honestly a 401 against one
+        with auth on.
+        """
+        headers = dict(extra or {})
+        if self._ingest_key:
+            headers["Authorization"] = f"Bearer {self._ingest_key}"
+        return headers
 
     # ── telemetry ─────────────────────────────────────────────────────────────
 
@@ -102,7 +140,7 @@ class PlaneClient:
                     async with httpx.AsyncClient(timeout=15.0) as client:
                         await client.post(
                             f"{self._base}/v1/plane/{self.session.node_id}/consumed",
-                            json={"key": key},
+                            json={"key": key}, headers=self._auth(),
                         )
                 except httpx.HTTPError:
                     pass  # best-effort; the ack itself was already delivered
@@ -119,7 +157,7 @@ class PlaneClient:
                     response = await client.post(
                         f"{self._base}/v1/plane/{self.session.node_id}/telemetry",
                         json={"run_id": self._run_id, "events": lines},
-                        headers={"Idempotency-Key": key},
+                        headers=self._auth({"Idempotency-Key": key}),
                     )
                     response.raise_for_status()
                 return
@@ -157,7 +195,7 @@ class PlaneClient:
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     response = await client.post(
                         f"{self._base}/v1/plane/{self.session.node_id}/probe-report",
-                        json=payload,
+                        json=payload, headers=self._auth(),
                     )
                     response.raise_for_status()
                 return True
@@ -234,6 +272,14 @@ class PlaneClient:
 
     # ── downstream subscription ───────────────────────────────────────────────
 
+    async def _pause(self, stop: asyncio.Event, seconds: float) -> bool:
+        """Wait `seconds` or until `stop`. True when it is time to give up."""
+        try:
+            await asyncio.wait_for(stop.wait(), seconds)
+        except TimeoutError:
+            return False
+        return True
+
     async def run(self, stop: asyncio.Event) -> None:
         """Subscribe to desired state until `stop` is set. Reconnects with
         backoff; fail-continue under local config on channel loss."""
@@ -242,23 +288,50 @@ class PlaneClient:
         while not stop.is_set():
             try:
                 async with httpx.AsyncClient(timeout=None) as client, client.stream(
-                    "GET", f"{self._base}/v1/plane/{self.session.node_id}/desired"
+                    "GET", f"{self._base}/v1/plane/{self.session.node_id}/desired",
+                    headers=self._auth(),
                 ) as response:
+                    if response.status_code in (401, 403):
+                        # A rejected credential is not weather: retrying with
+                        # backoff forever would leave the node running under
+                        # stale desired state while looking merely disconnected.
+                        # Say it once per attempt, loudly, and keep the backoff
+                        # so a key rotated back in is picked up without a
+                        # restart.
+                        log.error(
+                            "plane rejected this node's credential (%s) on the "
+                            "desired-state subscription — the node is running "
+                            "on its LAST APPLIED state and operator commands "
+                            "are not reaching it. Check the ingest key: it "
+                            "needs the `ingest` scope, and a node-bound key "
+                            "may only speak for %r.",
+                            response.status_code, self.session.node_id,
+                        )
+                        raise _AuthRejected(response.status_code)
                     backoff = 1.0
                     await self._consume_sse(response, stop)
+                # The stream ended with no error: the backend closed it, or an
+                # intermediary timed the connection out. Reconnect — but never
+                # in a tight loop. A stream that ends immediately (a 200 with an
+                # empty body, a proxy that does not speak SSE) would otherwise
+                # spin the event loop and reconnect as fast as the backend can
+                # answer, which is a self-inflicted denial of service on the
+                # one channel that carries operator commands.
+                if await self._pause(stop, RECONNECT_DELAY):
+                    return
+            except _AuthRejected:
+                if await self._pause(stop, backoff):
+                    return
+                backoff = min(backoff * 2, 30.0)
             except httpx.HTTPError:
                 if self._hold_after is not None:
-                    try:
-                        await asyncio.wait_for(stop.wait(), self._hold_after)
+                    if await self._pause(stop, self._hold_after):
                         return
-                    except TimeoutError:
-                        self.session.paused = True  # hold_on_disconnect opted in
+                    self.session.paused = True  # hold_on_disconnect opted in
                 else:
-                    try:
-                        await asyncio.wait_for(stop.wait(), backoff)
+                    if await self._pause(stop, backoff):
                         return
-                    except TimeoutError:
-                        backoff = min(backoff * 2, 30.0)
+                    backoff = min(backoff * 2, 30.0)
 
     async def _consume_sse(self, response, stop: asyncio.Event) -> None:  # noqa: ANN001
         event_name = ""
