@@ -63,7 +63,14 @@ class PlaneClient:
     ) -> None:
         self._base = backend_url.rstrip("/")
         self.session = session
-        self._run_id = run_id or session.node_id
+        # A run is one process lifetime, and the default run id has to say so.
+        # `seq` is this client's counter, starting at zero, and the backend keys
+        # an event on (run_id, node_id, seq) — so defaulting the keepalive run to
+        # the node id made a restarted process collide with its own predecessor:
+        # every event it sent was refused as a duplicate and its telemetry never
+        # reached the log again. Explicit run ids are untouched; the suffix only
+        # affects the default.
+        self._run_id = run_id or f"{session.node_id}-{uuid.uuid4().hex[:8]}"
         self._on_fact = on_fact
         self._hold_after = hold_on_disconnect_after
         self._heartbeat_period = heartbeat_period
