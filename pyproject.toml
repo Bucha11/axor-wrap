@@ -19,7 +19,9 @@ keywords = ["agents", "governance", "llm", "ai", "security", "langchain", "mcp"]
 # then raises when asked to gate it, and it let the plane tests sit red on a
 # machine where nothing was obviously missing.
 dependencies = [
-    "axor-core>=0.10.2,<0.11",
+    # 0.11 took ownership of the shared trace / tool-manifest / predicate
+    # schemas this package builds against, so the range admits it.
+    "axor-core>=0.10.2,<0.12",
 ]
 
 [project.optional-dependencies]
