@@ -19,7 +19,12 @@ from axor_wrap.errors import (
     ToolDenied,
     UnknownToolError,
 )
-from axor_wrap.manifest import build_manifest, ensure_valid, validate_manifest
+from axor_wrap.manifest import (
+    build_manifest,
+    ensure_valid,
+    harness_manifest,
+    validate_manifest,
+)
 from axor_wrap.roles import EffectGuess, infer_effect
 from axor_wrap.experiment import (
     AssignmentError,
@@ -77,6 +82,7 @@ __all__ = [
     "ensure_valid",
     "governance_yaml",
     "governor_kwargs",
+    "harness_manifest",
     "infer_effect",
     "scan_project",
     "validate_manifest",
