@@ -357,7 +357,14 @@ class PlaneClient:
 
     def _dispatch(self, event_name: str, data: dict) -> None:
         if event_name == "snapshot":
-            self.session.apply_snapshot(int(data["version"]), data.get("state", {}))
+            # `commands` is the signed command behind each key of `state`
+            # (protocol section 3, v0.3). An older plane sends none, and a
+            # signed deployment then refuses the snapshot and says so upstream
+            # rather than applying state nobody signed.
+            self.session.apply_snapshot(
+                int(data["version"]), data.get("state", {}),
+                data.get("commands", ()),
+            )
         elif event_name == "delta":
             self.session.apply_delta(
                 int(data["version"]), data.get("delta", data.get("state", {})),
