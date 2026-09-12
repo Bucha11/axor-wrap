@@ -104,6 +104,36 @@ from axor_wrap import wrap_callables
 governed = wrap_callables(tools, manifests)         # drop-in callables, one shared session
 ```
 
+### One mechanism, one flag
+
+`WrappedToolset.call()` and `WrappedToolset.callables()` are two SURFACES of one
+wrap, not two mechanisms: same governor, same value ledger, same recorder. Which
+one you use is decided by who owns the invocation loop, nothing else.
+
+`enforcement` is the only mode knob:
+
+| | `enforcement="on"` (default) | `enforcement="off"` |
+|---|---|---|
+| governor evaluates | yes | yes |
+| verdict recorded in the trace | yes | yes |
+| output registered in the taint ledger | yes | yes |
+| a deny blocks the call | **yes** | no |
+
+`"off"` is an **UNGOVERNED arm**: observed but not enforced. It is not the same
+as an unwrapped agent, which produces no ledger, no verdicts, and no way to turn
+governance on later. Switching an arm from ungoverned to governed is this flag
+and nothing else.
+
+A harness that has only callables and no source to scan (an eval runner, a test
+bench, a demo node) gets its manifests from `harness_manifest`:
+
+```python
+from axor_wrap import harness_manifest, wrap_callables
+
+manifests = [harness_manifest(name, untrusted=True) for name in tools]
+governed = wrap_callables(tools, manifests, enforcement="off", node_id="scenario-7")
+```
+
 ## What the scanner detects
 
 | Pattern | Framework tag |
@@ -130,7 +160,8 @@ Compilation semantics match axor-lab's `compiled_governor_config`: effect class 
 - static detection of the 6 patterns above, with signature→schema inference;
 - valid `tool-manifest/v1` output + embedded-schema validation;
 - governor-config compilation with axor-lab's exact mapping semantics;
-- `WrappedToolset` / `wrap_callables` driving the real `ToolCallGovernor` (extra `kernel`);
+- `WrappedToolset` / `wrap_callables` driving the real `ToolCallGovernor` (extra `kernel`), on either surface, under either enforcement setting;
+- `harness_manifest` — a valid `tool-manifest/v1` from asserted roles, for a caller that has the callables but no source to scan;
 - `LabRuntimeConnector` — the full runtime-jobs handshake (connect / poll / claim / events / complete), tested against a protocol stub.
 - `PlaneConnector` — a **live governed node on the Control Plane** (extra `plane`), built on this package's own `axor_wrap.plane` primitives (`PlaneSession`/`PlaneClient`): it registers, heartbeats (Control's topology shows the node with a level that mirrors its posture — `NORMAL` / `CAUTIOUS` / `RESTRICTED`), and subscribes to desired state over SSE, so an operator's **pause / stop / budget-cap** is applied to the node by real plane code. `PlaneConnector.gate(toolset)` binds that posture to a wrapped runtime, so a pause/stop actually **holds real tool execution** (`AdmissionHeld`), not just a session flag. Tested against a stdlib SSE plane-backend stub that pushes a real `{paused: true}` delta.
 - `PlaneConnector.post_health_check(payload)` — the out-dial half of the behavioral health check. A node that runs an [axor-probe](https://github.com/Bucha11/axor-probe) battery posts the finished verdict to the plane, which renders it on its Health panel. The payload is `axor_probe.integration.plane.health_payload(report)`; the dict is the whole contract, so axor-wrap never imports axor-probe and a node that does not probe simply never calls this. Batteries are the node's to run: the plane has no inbound path into a runtime, and a health check is not an exception.
