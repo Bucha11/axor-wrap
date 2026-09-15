@@ -39,6 +39,7 @@ class FakeGovernor:
     deny: set[str] = field(default_factory=set)
     evaluated: list[tuple[str, dict]] = field(default_factory=list)
     registered: list[tuple[FakeDecision, object]] = field(default_factory=list)
+    trace_events: list = field(default_factory=list)
 
     def evaluate(self, tool_name: str, args: dict) -> FakeDecision:
         self.evaluated.append((tool_name, args))
@@ -197,3 +198,78 @@ class LazyKernelImportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheDropInSurfaceIsTheSameWrap(unittest.TestCase):
+    """``callables()`` and ``call()`` are two surfaces of ONE toolset.
+
+    A harness that hands an agent a ``{name: fn}`` dict — an eval runner, an MCP
+    server, a LangChain executor — used to be unable to ask for observe-only or
+    for recording, because ``wrap_callables`` hardcoded both. So it reimplemented
+    the gate. These tests pin that it no longer has to.
+    """
+
+    def test_callables_go_through_the_same_governor_and_recorder(self) -> None:
+        tools = make_tools()
+        tools.pop("_calls")
+        governor = FakeGovernor()
+        toolset = WrappedToolset(tools, MANIFESTS, governor=governor, record=True)  # type: ignore[arg-type]
+        wrapped = toolset.callables()
+        wrapped["search_web"](query="x")
+        toolset.call("send_email", {"to": "a@b.c", "body": "hi"})
+        # one governor, one ordered ledger — not two paths that happen to agree
+        self.assertEqual([n for n, _ in governor.evaluated], ["search_web", "send_email"])
+        self.assertEqual(
+            [(c.tool, c.executed) for c in toolset._recorder.calls],  # noqa: SLF001
+            [("search_web", True), ("send_email", True)],
+        )
+
+    def test_observe_only_records_the_denial_and_still_executes(self) -> None:
+        tools = make_tools()
+        tools.pop("_calls")
+        governor = FakeGovernor(deny={"send_email"})
+        wrapped = wrap_callables(
+            tools, MANIFESTS, governor=governor, enforcement="off",  # type: ignore[arg-type]
+        )
+        # the UNGOVERNED arm: the verdict is reached, the call is not blocked
+        self.assertEqual(wrapped["send_email"](to="a@b.c", body="hi"), "sent")
+        self.assertEqual([n for n, _ in governor.evaluated], ["send_email"])
+        self.assertEqual(len(governor.registered), 1)
+
+    def test_enforcement_on_is_still_the_default(self) -> None:
+        tools = make_tools()
+        tools.pop("_calls")
+        wrapped = wrap_callables(
+            tools, MANIFESTS, governor=FakeGovernor(deny={"send_email"}),  # type: ignore[arg-type]
+        )
+        with self.assertRaises(ToolDenied):
+            wrapped["send_email"](to="a@b.c", body="hi")
+
+    def test_a_recorded_drop_in_run_can_produce_its_trace(self) -> None:
+        tools = make_tools()
+        tools.pop("_calls")
+        # the REAL kernel here: the point of the test is that the drop-in
+        # surface produces a trace whose verdicts came from axor-core, and a
+        # fake governor emits no verdicts to pair the recorded calls with.
+        toolset = WrappedToolset(tools, MANIFESTS, enforcement="off", record=True)
+        wrapped = toolset.callables()
+        wrapped["search_web"](query="x")
+        wrapped["send_email"](to="a@b.c", body="hi")
+        trace = toolset.trace({"trial_id": "t1", "arm": "ungoverned"})
+        intents = [e for e in trace["events"] if e["type"] == "tool_call_intent"]
+        gates = [e for e in trace["events"] if e["type"] == "gate_decision"]
+        self.assertEqual([e["tool"] for e in intents], ["search_web", "send_email"])
+        # the arm is recorded as observed-not-enforced on every verdict, which
+        # is what makes an UNGOVERNED trace distinguishable from a governed one
+        self.assertEqual([g["decision"]["enforced"] for g in gates], [False, False])
+
+    def test_node_id_stamps_the_kernels_own_events(self) -> None:
+        tools = make_tools()
+        tools.pop("_calls")
+        toolset = WrappedToolset(tools, MANIFESTS, node_id="scenario-7")
+        toolset.callables()["search_web"](query="x")
+        self.assertEqual(toolset.node_id, "scenario-7")
+        self.assertTrue(toolset.trace_events)
+        self.assertEqual(
+            {getattr(e, "node_id", None) for e in toolset.trace_events}, {"scenario-7"}
+        )
