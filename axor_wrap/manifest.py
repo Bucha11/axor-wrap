@@ -76,6 +76,58 @@ def build_manifest(tool: DetectedTool, effect: EffectGuess) -> dict[str, object]
     return manifest
 
 
+def harness_manifest(
+    tool_id: str,
+    *,
+    effect_class: str = "READ",
+    driving_args: tuple[str, ...] | list[str] = (),
+    untrusted: bool = False,
+    sensitive: bool = False,
+    args_schema: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """A valid ``tool-manifest/v1`` for a bare callable, from asserted roles.
+
+    For a caller that HAS the tool functions but no source to scan — an eval
+    harness handed ``{name: fn}``, a test bench, a demo node. Such a caller used
+    to have no way to reach ``WrappedToolset`` at all (it needs manifests), so
+    it reimplemented the gate instead; that is the hole this closes.
+
+    This is NOT ``scan_project`` + :func:`build_manifest`. Those derive a role
+    from the code; this one records the role you ASSERTED, which is only as good
+    as the assertion. Use it for a harness, never as the manifest of a real
+    deployment.
+
+    ``untrusted=True`` puts the tool in ``untrusted_sources``, so the kernel
+    taints its whole return — the right default for a harness whose premise is
+    that tool output is adversarial. ``sensitive=True`` additionally arms the
+    confidentiality floor on read.
+    """
+    if effect_class not in EFFECT_CLASSES:
+        from axor_wrap.errors import ManifestValidationError
+
+        raise ManifestValidationError(
+            tool_id, [f"effect_class must be one of {sorted(EFFECT_CLASSES)}"]
+        )
+    manifest: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        "id": tool_id,
+        "args_schema": dict(args_schema) if args_schema else {"type": "object"},
+        "effect": {
+            "default_class": effect_class,
+            "driving_args": list(driving_args),
+        },
+        "side_effecting": effect_class != "READ",
+    }
+    # whole-return taint: the schema is field-level, and "result" is the root
+    # path, so this is the coarse "everything this tool returns" declaration
+    # rather than a wildcard the compiler would have to special-case.
+    if untrusted:
+        manifest["untrusted_fields"] = ["result"]
+    if sensitive:
+        manifest["sensitive_fields"] = ["result"]
+    return ensure_valid(manifest)
+
+
 def validate_manifest(manifest: object) -> list[str]:
     """Validate against the embedded schema; returns the error list (empty = valid)."""
     errors: list[str] = []

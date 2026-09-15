@@ -4,7 +4,13 @@ import unittest
 
 from axor_wrap.detect import DetectedTool
 from axor_wrap.errors import ManifestValidationError
-from axor_wrap.manifest import build_manifest, embedded_schema, ensure_valid, validate_manifest
+from axor_wrap.manifest import (
+    build_manifest,
+    embedded_schema,
+    ensure_valid,
+    harness_manifest,
+    validate_manifest,
+)
 from axor_wrap.roles import EffectGuess
 
 
@@ -77,6 +83,41 @@ class ManifestTest(unittest.TestCase):
         schema = embedded_schema()
         self.assertEqual(schema["properties"]["schema_version"]["const"], "tool-manifest/v1")
         self.assertIn("effect", schema["required"])
+
+
+class TestAHarnessCanDeclareItsToolsWithoutASource(unittest.TestCase):
+    """``harness_manifest`` — the manifest a caller with only callables can make.
+
+    Without it a harness cannot construct a ``WrappedToolset`` at all, and the
+    only way to get governance telemetry was to reimplement the gate.
+    """
+
+    def test_it_validates_and_defaults_to_a_clean_read(self) -> None:
+        manifest = harness_manifest("search")
+        self.assertEqual(validate_manifest(manifest), [])
+        self.assertEqual(manifest["effect"], {"default_class": "READ", "driving_args": []})
+        self.assertIs(manifest["side_effecting"], False)
+        self.assertNotIn("untrusted_fields", manifest)
+
+    def test_untrusted_makes_the_tool_an_untrusted_source(self) -> None:
+        from axor_wrap.compile import compile_manifests
+
+        compiled = compile_manifests([harness_manifest("search", untrusted=True)])
+        self.assertEqual(compiled["untrusted_sources"], ["search"])
+
+    def test_an_export_tool_compiles_to_an_egress_sink(self) -> None:
+        from axor_wrap.compile import compile_manifests
+
+        compiled = compile_manifests([
+            harness_manifest("slack_post", effect_class="EXPORT", driving_args=["text"]),
+        ])
+        self.assertEqual(compiled["egress_sinks"], ["slack_post"])
+        self.assertEqual(compiled["driving_args"], {"slack_post": ["text"]})
+        self.assertIs(harness_manifest("slack_post", effect_class="EXPORT")["side_effecting"], True)
+
+    def test_an_unknown_effect_class_is_refused_not_coerced(self) -> None:
+        with self.assertRaises(ManifestValidationError):
+            harness_manifest("mystery", effect_class="MAYBE")
 
 
 if __name__ == "__main__":

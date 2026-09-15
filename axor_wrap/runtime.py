@@ -76,6 +76,7 @@ class WrappedToolset:
         enforcement: str = ENFORCEMENT_ON,
         record: bool = False,
         inputs: dict[str, object] | None = None,
+        node_id: str = "",
     ) -> None:
         """``governor`` overrides construction (tests / custom kernels); otherwise
         the governor is built lazily-imported from axor-core with the kwargs
@@ -105,13 +106,26 @@ class WrappedToolset:
         ``inputs`` are the scenario's declared inputs, needed to expand a
         ``$inputs.x`` allowlist reference into concrete destinations. Without
         them such a policy governs against the reference STRING, which denies
-        every real destination and allows the placeholder."""
+        every real destination and allows the placeholder.
+
+        ``node_id`` stamps the kernel's own trace events. Left empty the
+        governor emits events with no node, which is fine for a single-session
+        trace built by :meth:`trace` (the document names its own trial) but not
+        for a caller assembling a ``DecisionTrace`` or pushing
+        :meth:`kernel_events` for a named node."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
         self.policy = dict(policy) if policy else None
         self.inputs = dict(inputs) if inputs else None
         self.config = governor_kwargs(self.manifests, policy, inputs)
-        self._governor = governor if governor is not None else _build_governor(self.config)
+        self.node_id = node_id
+        # node_id is the governor's, not part of the compiled governance
+        # contract — keeping it out of `config` keeps `config` comparable
+        # between two runs of the same contract on different nodes.
+        self._governor = (
+            governor if governor is not None
+            else _build_governor({**self.config, "node_id": node_id})
+        )
         self._admission = admission
         if enforcement not in (ENFORCEMENT_ON, ENFORCEMENT_OFF):
             raise ValueError(
@@ -158,11 +172,39 @@ class WrappedToolset:
         """This session's trace in the shared kernel event schema.
 
         What a runtime pushes to Lab or to the Control Plane. Both consumers
-        read this one feed; neither gets its own instrumentation.
+        read this one feed; neither gets its own instrumentation. Defaults to
+        this toolset's ``node_id``, so a caller that named its node at
+        construction does not have to name it again here (and cannot name it
+        differently by accident).
         """
         from axor_wrap.plane.bridge import trace_to_kernel
 
-        return list(trace_to_kernel(self.trace_events, node_id))  # type: ignore[arg-type]
+        node = node_id if node_id is not None else (self.node_id or None)
+        return list(trace_to_kernel(self.trace_events, node))  # type: ignore[arg-type]
+
+    def callables(self) -> dict[str, Callable[..., object]]:
+        """This toolset as drop-in ``{name: callable}``, all sharing THIS session.
+
+        The second surface of the one wrap: :meth:`call` for a loop the caller
+        owns, this for a framework that owns its own invocation loop (LangChain,
+        an MCP server, an eval harness that hands an agent a tool dict). Same
+        governor, same ledger, same enforcement flag, same recorder — the trace
+        comes off this object afterwards either way.
+
+        ``wrap_callables`` is the one-liner for when the toolset itself is not
+        needed; keep the toolset when it is (``record=True`` and you want
+        :meth:`trace`, or a Control-Plane admission bound later).
+        """
+        def _make(name: str) -> Callable[..., object]:
+            fn = self._tools[name]
+
+            @functools.wraps(fn)
+            def wrapped(**kwargs: object) -> object:
+                return self.call(name, kwargs)
+
+            return wrapped
+
+        return {name: _make(name) for name in self._tools}
 
     def set_admission(self, admission: Callable[[], bool] | None) -> None:
         """Install (or clear) the intent-boundary admission predicate. Used by
@@ -248,6 +290,10 @@ def wrap_callables(
     policy: dict[str, object] | None = None,
     governor: object | None = None,
     admission: Callable[[], bool] | None = None,
+    enforcement: str = ENFORCEMENT_ON,
+    record: bool = False,
+    inputs: dict[str, object] | None = None,
+    node_id: str = "",
 ) -> dict[str, Callable[..., object]]:
     """Wrapped drop-in callables sharing ONE governor session.
 
@@ -255,16 +301,19 @@ def wrap_callables(
     an MCP server instead of the raw functions; each call is gated exactly like
     ``WrappedToolset.call`` and raises ``ToolDenied`` on a kernel deny (or
     ``AdmissionHeld`` when a bound Control-Plane node is paused/stopped).
+
+    ``enforcement="off"`` observes without blocking — the same UNGOVERNED arm
+    ``WrappedToolset`` documents. It is here because this is the surface a
+    harness that hands an agent a tool dict actually uses, and a harness that
+    could not ask for observe-only had to reimplement the gate to get it.
+
+    ``record=True`` keeps raw arguments and results, but this function returns
+    only the callables and so gives no way to read them back: build a
+    ``WrappedToolset`` and call :meth:`WrappedToolset.callables` when you want
+    the trace afterwards.
     """
     toolset = WrappedToolset(
         tools, manifests, policy=policy, governor=governor, admission=admission,
+        enforcement=enforcement, record=record, inputs=inputs, node_id=node_id,
     )
-
-    def _make(name: str, fn: Callable[..., object]) -> Callable[..., object]:
-        @functools.wraps(fn)
-        def wrapped(**kwargs: object) -> object:
-            return toolset.call(name, kwargs)
-
-        return wrapped
-
-    return {name: _make(name, fn) for name, fn in tools.items()}
+    return toolset.callables()
