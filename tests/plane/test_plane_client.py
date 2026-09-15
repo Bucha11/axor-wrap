@@ -144,3 +144,24 @@ async def test_heartbeat_loop_ticks_and_stops(monkeypatch) -> None:  # noqa: ANN
     stop.set()
     await task
     assert calls and all(c == "CAUTIOUS" for c in calls)
+
+
+def test_the_default_run_id_is_unique_per_process() -> None:
+    """A run is one process lifetime, and the default run id has to say so.
+
+    `seq` is a per-client counter starting at zero, and the backend keys an
+    event on (run_id, node_id, seq). Defaulting the keepalive run to the node id
+    made a restarted process collide with its own predecessor: every event it
+    sent was refused as a duplicate, so its telemetry never reached the log
+    again — while the node went on reporting a state nothing recorded.
+    """
+    from axor_wrap.plane.client import PlaneClient
+    from axor_wrap.plane.session import PlaneSession
+
+    first = PlaneClient("http://b", PlaneSession(node_id="n1"))
+    second = PlaneClient("http://b", PlaneSession(node_id="n1"))
+    assert first._run_id != second._run_id
+    assert first._run_id.startswith("n1-")
+    # An explicitly chosen run id is still honoured verbatim.
+    pinned = PlaneClient("http://b", PlaneSession(node_id="n1"), run_id="my-run")
+    assert pinned._run_id == "my-run"

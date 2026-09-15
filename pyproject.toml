@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axor-wrap"
-version = "0.1.0"
+version = "0.2.0"
 description = "Wrap engine for the Axor ecosystem: scan agent code, emit tool manifests, compile governance, wrap the runtime"
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { text = "Apache-2.0" }
@@ -19,8 +19,16 @@ keywords = ["agents", "governance", "llm", "ai", "security", "langchain", "mcp"]
 # then raises when asked to gate it, and it let the plane tests sit red on a
 # machine where nothing was obviously missing.
 dependencies = [
-    # 0.11 took ownership of the shared trace / tool-manifest / predicate
-    # schemas this package builds against, so the range admits it.
+    # The CEILING moves, the floor does not. 0.11 took ownership of the schemas
+    # that cross a product boundary and added `policy.from_record`; this package
+    # imports neither, and 213 tests pass against an installed 0.11 that this
+    # file declared unsupported. So the bound was stale, not protective — and
+    # raising the floor to match would drop 0.10.x support this package still
+    # has, which is a narrowing nothing here asks for.
+    #
+    # Unlike axor-eval and axor-sentinel, nothing in this package looked at the
+    # installed kernel, so the staleness was silent. tests/test_core_compatibility.py
+    # is the alarm that was missing.
     "axor-core>=0.10.2,<0.12",
 ]
 

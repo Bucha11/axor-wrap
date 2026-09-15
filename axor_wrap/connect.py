@@ -223,6 +223,7 @@ class PlaneConnector:
         local_budget_cap: int | None = None,
         test_bench: bool = False,
         heartbeat_period: float = 10.0,
+        ingest_key: str | None = None,
     ) -> None:
         self.backend_url = backend_url.rstrip("/")
         self.node_id = node_id
@@ -231,6 +232,11 @@ class PlaneConnector:
         self._local_budget_cap = local_budget_cap
         self._test_bench = test_bench
         self._heartbeat_period = heartbeat_period
+        # Scoped `ingest` credential for the plane channel. Optional, because a
+        # backend with auth off accepts an unauthenticated node; required the
+        # moment the operator sets AXOR_API_TOKEN, and best minted bound to this
+        # node_id so it cannot speak for its neighbours.
+        self._ingest_key = ingest_key
         self.session: PlaneSession | None = None
         self._client: PlaneClient | None = None
         self._stop: asyncio.Event | None = None
@@ -280,6 +286,7 @@ class PlaneConnector:
             self.session,
             run_id=self._run_id,
             heartbeat_period=self._heartbeat_period,
+            ingest_key=self._ingest_key,
         )
         self._stop = asyncio.Event()
         return self

@@ -1,10 +1,13 @@
-"""PlaneSession: protocol v0.2 semantics, no I/O.
+"""PlaneSession: protocol v0.3 semantics, no I/O.
 
 Everything that makes a compromised backend harmless lives here, adapter-side
 (protocol sections 3-6, 8):
 
 - Commands are verified end-to-end against operator pubkeys from LOCAL config;
-  the channel's own auth is irrelevant to integrity.
+  the channel's own auth is irrelevant to integrity. **Snapshots too** (v0.3):
+  the snapshot carries the signed command behind each key it asserts, because
+  a channel with one verified path and one unverified path has no verified
+  path — and reconnect, which takes a fresh snapshot, is routine.
 - Version monotonicity: a delta with ``version <= applied_version`` is a no-op.
 - Lattice: ``stopped`` absorbs later effects (reported ``noop_absorbed``).
 - Budget caps are decrease-only AT THE ADAPTER (``rejected_widening``).
@@ -19,6 +22,7 @@ to flush (telemetry direction owns durability, protocol section 5).
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from axor_core.kernel.jcs import canonicalize
@@ -83,26 +87,123 @@ class PlaneSession:
 
     # ── downstream application ────────────────────────────────────────────────
 
-    def apply_snapshot(self, version: int, state: dict) -> AppliedEffect:
-        """Snapshot on (re)subscribe: LWW makes replay trivially correct."""
-        return self._apply(version, state, signed=False)
+    def apply_snapshot(
+        self, version: int, state: dict, commands: Sequence[dict] = (),
+    ) -> AppliedEffect:
+        """Snapshot on (re)subscribe. Every field of it has to be signed too.
+
+        Protocol section 3 used to say state is LWW so "reconnect is trivially
+        correct", and section 6 said a compromised backend "cannot forge a
+        pause, stop, injection or attestation". Both were implemented, and they
+        contradicted each other: a delta was verified and the snapshot carrying
+        the SAME fields was not. A backend could therefore forge anything it
+        liked by pushing it as a snapshot — pause a node, un-pause one the
+        operator had paused, excise values out of a running node's context, fire
+        a replan — and the reconnect that takes a fresh snapshot is routine, not
+        exceptional: the bus drops a reader that falls behind precisely so it
+        reconnects.
+
+        So the snapshot now carries `commands`: the signed command behind each
+        key of `state` (protocol section 3, v0.3). Each is verified exactly as a
+        delta is, and then replayed in version order through the same `_apply`,
+        so the lattice — absorbing `stopped`, decrease-only budget, one-shot
+        ids — applies identically whether a command arrives live or after a
+        reconnect. A key in `state` that no verified command accounts for is the
+        forgery this exists to catch, and it refuses the WHOLE snapshot: a
+        partial apply would be the backend choosing which half of an operator's
+        command takes effect.
+
+        With no operator pubkeys configured (the open dev posture, where nothing
+        is signed and the deployment is told so loudly), it stays LWW as before.
+        """
+        if not self.operator_pubkeys:
+            return self._apply(version, state, signed=False)
+
+        verified: list[tuple[int, dict]] = []
+        for command in commands:
+            # Everything here came off the wire from the party this check
+            # exists to distrust, so a command that is not even shaped like one
+            # is refused rather than allowed to raise out of the transport.
+            try:
+                entry_version = int(command["version"])
+                delta = dict(command["delta"])
+                operator = command["operator"]
+                timestamp = command["timestamp"]
+                sig = command["sig"]
+            except (KeyError, TypeError, ValueError):
+                effect = AppliedEffect("sig_invalid", "malformed command entry")
+                self._report(effect, version)
+                return effect
+            if not isinstance(operator, str) or not isinstance(sig, str) \
+                    or not isinstance(timestamp, str):
+                effect = AppliedEffect("sig_invalid", "malformed command entry")
+                self._report(effect, version)
+                return effect
+            effect = self._verify(entry_version, delta, operator, timestamp, sig)
+            if effect is not None:
+                self._report(effect, version)
+                return effect
+            verified.append((entry_version, delta))
+        verified.sort(key=lambda vd: vd[0])
+
+        # Every key the snapshot asserts must be the one a verified command
+        # last wrote. Keys the commands carry that the snapshot does NOT is the
+        # allowed direction: clearing a consumed one-shot removes a key and
+        # cannot forge anything.
+        signed_values: dict[str, object] = {}
+        for _, delta in verified:
+            signed_values.update(delta)
+        for key, value in state.items():
+            if key not in signed_values:
+                effect = AppliedEffect("sig_invalid", f"unsigned state key {key!r}")
+                self._report(effect, version)
+                return effect
+            if signed_values[key] != value:
+                effect = AppliedEffect(
+                    "sig_invalid", f"state key {key!r} is not what was signed",
+                )
+                self._report(effect, version)
+                return effect
+
+        applied = AppliedEffect("applied")
+        for command_version, delta in verified:
+            if command_version <= self.applied_version:
+                continue  # already applied live; the chain is a superset
+            applied = self._apply(command_version, delta, signed=True)
+        # The snapshot's own version can be ahead of the last signed command —
+        # a consumption ack clears a one-shot and bumps the version without any
+        # operator commanding anything. Taking it is safe: the version is a
+        # counter, and a backend inflating it can only make the node ignore
+        # later commands, which is the withhold/delay it is already allowed
+        # (section 6) and never a forged effect.
+        self.applied_version = max(self.applied_version, version)
+        return applied
 
     def apply_delta(
         self, version: int, delta: dict, operator: str, timestamp: str, sig: str
     ) -> AppliedEffect:
         """A pushed command. Signature is verified against local keys over the
         canonical (node_id, version, delta, timestamp) — protocol section 6."""
-        if self.operator_pubkeys:
-            pubkey = self.operator_pubkeys.get(operator)
-            message = _canonical({
-                "node_id": self.node_id, "version": version,
-                "body": delta, "timestamp": timestamp,
-            })
-            if pubkey is None or not _verify_ed25519(pubkey, message, sig):
-                effect = AppliedEffect("sig_invalid", f"operator={operator!r}")
-                self._report(effect, version)
-                return effect
+        rejected = self._verify(version, delta, operator, timestamp, sig)
+        if rejected is not None:
+            self._report(rejected, version)
+            return rejected
         return self._apply(version, delta, signed=True)
+
+    def _verify(
+        self, version: int, body: dict, operator: str, timestamp: str, sig: str
+    ) -> AppliedEffect | None:
+        """None when the signature is good (or nothing is signed here)."""
+        if not self.operator_pubkeys:
+            return None
+        pubkey = self.operator_pubkeys.get(operator)
+        message = _canonical({
+            "node_id": self.node_id, "version": version,
+            "body": body, "timestamp": timestamp,
+        })
+        if pubkey is None or not _verify_ed25519(pubkey, message, sig):
+            return AppliedEffect("sig_invalid", f"operator={operator!r}")
+        return None
 
     def _apply(self, version: int, state: dict, signed: bool) -> AppliedEffect:
         if version <= self.applied_version:
