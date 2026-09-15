@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axor-wrap"
-version = "0.1.0"
+version = "0.2.0"
 description = "Wrap engine for the Axor ecosystem: scan agent code, emit tool manifests, compile governance, wrap the runtime"
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { text = "Apache-2.0" }
