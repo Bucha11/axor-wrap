@@ -165,3 +165,75 @@ def test_the_default_run_id_is_unique_per_process() -> None:
     # An explicitly chosen run id is still honoured verbatim.
     pinned = PlaneClient("http://b", PlaneSession(node_id="n1"), run_id="my-run")
     assert pinned._run_id == "my-run"
+
+
+# ── reputation (axor-sentinel's snapshot, transported verbatim) ───────────────
+
+
+def _snapshot_payload(version: int = 3) -> dict:
+    """axor-sentinel's snapshot_payload shape, hand-built: axor-wrap transports
+    it without importing axor-sentinel."""
+    return {
+        "version": version, "generated_at": 1_700_000_000.0,
+        "resource_reputation": {"db:customers": 1.0},
+        "container_reputation": {}, "checksum": "c" * 64, "signature": "",
+        "resource_level": {"db:customers": "FLAGGED"}, "container_level": {},
+        "verdict_facts": {"db:customers": ["P3 staging count"]},
+        "resource_score_telemetry": {}, "container_score_telemetry": {},
+    }
+
+
+async def test_reputation_posts_to_the_node_path(monkeypatch) -> None:  # noqa: ANN001
+    import httpx
+
+    seen: dict = {}
+
+    async def fake_post(self, url, json=None, **kw):  # noqa: ANN001, ANN202, A002
+        seen["url"], seen["json"] = url, json
+        return httpx.Response(201, json={"stored": True, "version": 3},
+                              request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    client = PlaneClient("http://plane.test", PlaneSession(node_id="n7"))
+    assert await client.post_reputation(_snapshot_payload()) is True
+    assert seen["url"] == "http://plane.test/v1/plane/n7/reputation"
+    assert seen["json"] == _snapshot_payload()
+
+
+async def test_reputation_already_held_is_delivered(monkeypatch) -> None:  # noqa: ANN001
+    # A retry after a lost response: the plane holds this version already and
+    # says 409. That is delivery, not a malformed payload — raising would put an
+    # exception into the node's audit cycle for a network hiccup.
+    import httpx
+
+    async def fake_post(self, url, json=None, **kw):  # noqa: ANN001, ANN202, A002
+        return httpx.Response(409, json={"detail": "not newer"},
+                              request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    client = PlaneClient("http://plane.test", PlaneSession(node_id="n7"))
+    assert await client.post_reputation(_snapshot_payload()) is True
+
+
+async def test_reputation_refused_snapshot_raises(monkeypatch) -> None:  # noqa: ANN001
+    import httpx
+
+    attempts = {"n": 0}
+
+    async def fake_post(self, url, json=None, **kw):  # noqa: ANN001, ANN202, A002
+        attempts["n"] += 1
+        return httpx.Response(400, json={"detail": "checksum does not match"},
+                              request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    client = PlaneClient("http://plane.test", PlaneSession(node_id="n7"))
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.post_reputation(_snapshot_payload())
+    assert attempts["n"] == 1
+
+
+async def test_reputation_undelivered_is_false(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    client = PlaneClient(DEAD_BACKEND, PlaneSession(node_id="n7"))
+    assert await client.post_reputation(_snapshot_payload()) is False

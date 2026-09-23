@@ -38,6 +38,7 @@ class _PlaneStub:
     def __init__(self) -> None:
         self.telemetry: list[dict] = []
         self.probe_reports: list[dict] = []
+        self.reputations: list[dict] = []
         self.telemetry_seen = threading.Event()
         self.subscribed = threading.Event()
         self.shutdown = threading.Event()
@@ -82,6 +83,10 @@ def _handler(stub: _PlaneStub) -> type[BaseHTTPRequestHandler]:
                 if parts[3] == "telemetry":
                     stub.telemetry.append(body)
                     stub.telemetry_seen.set()
+                if parts[3] == "reputation":
+                    stub.reputations.append(body)
+                    self._json(201, {"stored": True, "version": body.get("version")})
+                    return
                 if parts[3] == "probe-report":
                     stub.probe_reports.append(body)
                     self._json(201, {"stored": True, "id": len(stub.probe_reports)})
@@ -275,6 +280,45 @@ class PlaneConnectorTest(unittest.TestCase):
         self.assertTrue(accepted)
         # Delivered verbatim over real HTTP — the node reports, the plane stores.
         self.assertEqual(self.stub.probe_reports, [payload])
+
+
+    # ── reputation: SentinelCycle(publish=connector.reputation_publisher()) ──
+
+    _SNAPSHOT = {
+        "version": 4, "generated_at": 1_700_000_004.0,
+        "resource_reputation": {"db:customers": 1.0}, "container_reputation": {},
+        "checksum": "c" * 64, "signature": "",
+        "resource_level": {"db:customers": "FLAGGED"}, "container_level": {},
+        "verdict_facts": {"db:customers": ["P3 staging count"]},
+        "resource_score_telemetry": {}, "container_score_telemetry": {},
+    }
+
+    def test_reputation_reaches_the_plane(self) -> None:
+        async def body() -> None:
+            connector = PlaneConnector(self.base_url, NODE_ID)
+            self.assertTrue(await connector.post_reputation(self._SNAPSHOT))
+        asyncio.run(body())
+        self.assertEqual(self.stub.reputations, [self._SNAPSHOT])
+
+    def test_publisher_without_a_loop_posts_before_returning(self) -> None:
+        # A plain script runs the cycle with no event loop: the publisher
+        # completes the post before the cycle moves on.
+        publish = PlaneConnector(self.base_url, NODE_ID).reputation_publisher()
+        publish(self._SNAPSHOT)
+        self.assertEqual(self.stub.reputations, [self._SNAPSHOT])
+
+    def test_publisher_schedules_onto_a_running_loop(self) -> None:
+        # The usual node: the connector's loop is running and the hourly cycle
+        # runs in a worker thread. The post is scheduled onto the loop.
+        async def body() -> None:
+            publish = PlaneConnector(self.base_url, NODE_ID).reputation_publisher()
+            await asyncio.to_thread(publish, self._SNAPSHOT)
+            for _ in range(100):
+                if self.stub.reputations:
+                    return
+                await asyncio.sleep(0.02)
+        asyncio.run(body())
+        self.assertEqual(self.stub.reputations, [self._SNAPSHOT])
 
 
 class PlaneConnectorConnectionErrorsTest(unittest.TestCase):

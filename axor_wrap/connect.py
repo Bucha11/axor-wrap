@@ -30,8 +30,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from axor_wrap.errors import ConnectorError, PlaneExtraNotInstalledError
@@ -43,6 +45,8 @@ if TYPE_CHECKING:
     from axor_wrap.runtime import WrappedToolset
 
 _DEFAULT_TIMEOUT_S = 10.0
+
+log = logging.getLogger("axor.wrap.connect")
 
 
 class LabRuntimeConnector:
@@ -184,6 +188,19 @@ def _plane_types() -> tuple[type[PlaneClient], type[PlaneSession]]:
     except ImportError as exc:  # pragma: no cover - import guard
         raise PlaneExtraNotInstalledError() from exc
     return PlaneClient, PlaneSession
+
+
+def _log_undelivered_reputation(future: object) -> None:
+    """Done-callback for a scheduled reputation post: say when it was lost.
+    Reporting is observation — a plane being down must not surface in the
+    node's audit cycle as an exception."""
+    try:
+        delivered = future.result()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — logged, see docstring
+        log.warning("reputation snapshot refused by the plane", exc_info=True)
+        return
+    if not delivered:
+        log.warning("reputation snapshot not delivered to the plane")
 
 
 class PlaneConnector:
@@ -339,6 +356,53 @@ class PlaneConnector:
             self.connect()
         assert self._client is not None
         return await self._client.post_probe_report(health_payload)
+
+    async def post_reputation(self, snapshot_payload: dict) -> bool:
+        """Post the reputation this node's axor-sentinel computed. True when the
+        plane holds it (or a newer version).
+
+        `snapshot_payload` is ``axor_sentinel.sentinel.snapshot.snapshot_payload``
+        of a ReputationSnapshot. Without this, Control showed "no sentinel is
+        reporting" for every node: the plane had the route and the UI, and
+        nothing on a node ever sent a snapshot. Usually wired through
+        :meth:`reputation_publisher` rather than called directly.
+        """
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.post_reputation(snapshot_payload)
+
+    def reputation_publisher(
+        self, loop: asyncio.AbstractEventLoop | None = None,
+    ) -> Callable[[dict], None]:
+        """A ``publish`` callback for ``SentinelCycle``: each snapshot the cycle
+        swaps in is posted to the plane::
+
+            cycle = SentinelCycle(neo4j, snapshot_dir,
+                                  publish=connector.reputation_publisher())
+
+        The cycle is synchronous and usually runs off the event loop (a
+        background thread, hourly). When a loop is running — the one passed,
+        or the one current when this is called — the post is scheduled onto it
+        and the cycle does not wait; failures are logged. With no loop running
+        (a plain script), the post runs to completion before the cycle returns.
+        """
+        target = loop
+        if target is None:
+            with contextlib.suppress(RuntimeError):
+                target = asyncio.get_running_loop()
+
+        def publish(payload: dict) -> None:
+            if target is not None and target.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    self.post_reputation(payload), target,
+                )
+                future.add_done_callback(_log_undelivered_reputation)
+                return
+            if not asyncio.run(self.post_reputation(payload)):
+                log.warning("reputation snapshot not delivered to the plane")
+
+        return publish
 
     def stop(self) -> None:
         """Signal :meth:`run` to wind the node down. Idempotent."""
