@@ -218,6 +218,48 @@ class PlaneClient:
             backoff *= 2
         return False
 
+    async def post_reputation(self, payload: dict) -> bool:
+        """POST one axor-sentinel ReputationSnapshot out-dial. True when the
+        plane holds it — or holds a newer one.
+
+        `payload` is axor-sentinel's ``snapshot_payload(snapshot)`` — the shape
+        ``SentinelCycle(publish=...)`` hands its publisher. Like the health
+        check, the dict is the contract: axor-wrap transports it and does not
+        import axor-sentinel.
+
+        409 is success here, not a malformed payload: the plane answers it for
+        a version no newer than the one it holds, which is exactly what a retry
+        after a lost response produces. Raising on it would turn the first
+        timeout into an exception in the node's audit cycle. Any other 4xx is a
+        snapshot the plane refused (a checksum or a level that does not match)
+        and raises. Not spooled, for the health check's reason: the next cycle
+        supersedes this snapshot.
+        """
+        httpx = _httpx()
+        backoff = 0.5
+        for attempt in range(_TELEMETRY_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    response = await client.post(
+                        f"{self._base}/v1/plane/{self.session.node_id}/reputation",
+                        json=payload, headers=self._auth(),
+                    )
+                    if response.status_code == 409:
+                        return True
+                    response.raise_for_status()
+                return True
+            except httpx.HTTPStatusError as exc:
+                if 400 <= exc.response.status_code < 500:
+                    raise
+                if attempt == _TELEMETRY_ATTEMPTS - 1:
+                    return False
+            except httpx.HTTPError:
+                if attempt == _TELEMETRY_ATTEMPTS - 1:
+                    return False
+            await asyncio.sleep(backoff)
+            backoff *= 2
+        return False
+
     def _load_spool(self) -> list[dict]:
         if not self._spool_path or not os.path.exists(self._spool_path):
             return []
