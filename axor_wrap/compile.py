@@ -6,6 +6,11 @@ The mapping semantics are the SAME as axor-lab's canonical compilation
 
 - **egress_sinks** — tools whose effect can resolve to EXPORT or EXEC
   (default_class or any ``resolve`` rule class);
+- **integrity_sinks** — tools that can resolve to WRITE, never to EXPORT/EXEC,
+  and declare ``effect.driving_args``: a state change whose driving args the
+  attacker must not choose (axor-core ``integrity_sinks`` — integrity check only,
+  no confidentiality floor). Present only when non-empty, so a manifest set
+  without one compiles — and hashes — exactly as before;
 - **untrusted_sources** — tools declaring ``untrusted_fields``, with the
   per-tool field patterns kept alongside;
 - **driving_args** — each tool's ``effect.driving_args``;
@@ -25,6 +30,7 @@ from __future__ import annotations
 import json
 
 EGRESS_CLASSES = frozenset({"EXPORT", "EXEC"})  # same as lab_contracts.semantics
+INTEGRITY_CLASS = "WRITE"
 _DEFAULT_ALLOWLIST_ARG = "recipient"
 
 
@@ -64,6 +70,7 @@ def compile_manifests(
 ) -> dict[str, object]:
     """The canonical compilation (mirrors lab's ``compiled_governor_config``)."""
     egress: list[str] = []
+    integrity: list[str] = []
     untrusted_sources: list[str] = []
     sensitive_sources: list[str] = []
     driving: dict[str, list[str]] = {}
@@ -73,18 +80,21 @@ def compile_manifests(
         effect: dict[str, object] = manifest.get("effect", {}) or {}  # type: ignore[assignment]
         classes = {str(effect.get("default_class"))}
         classes.update(str(rule["class"]) for rule in effect.get("resolve", []))  # type: ignore[union-attr]
+        args = [str(a) for a in effect.get("driving_args", [])]  # type: ignore[union-attr]
         if classes & EGRESS_CLASSES:
             egress.append(tool_id)
+        elif INTEGRITY_CLASS in classes and args:
+            integrity.append(tool_id)
         fields = [str(p) for p in manifest.get("untrusted_fields", [])]  # type: ignore[union-attr]
         if fields:
             untrusted_sources.append(tool_id)
             taint_fields[tool_id] = sorted(fields)
         if manifest.get("sensitive_fields"):
             sensitive_sources.append(tool_id)
-        args = [str(a) for a in effect.get("driving_args", [])]  # type: ignore[union-attr]
         if args:
             driving[tool_id] = args
     egress.sort()
+    integrity.sort()
     untrusted_sources.sort()
     sensitive_sources.sort()
     # per-sink consequence-class overrides — the `danger=` knob. Declared in
@@ -101,7 +111,7 @@ def compile_manifests(
         for sink in egress:
             arg = (driving.get(sink) or [_DEFAULT_ALLOWLIST_ARG])[0]
             value_policies[sink] = {arg: {"enum": resolved}}
-    return {
+    canon: dict[str, object] = {
         "egress_sinks": egress,
         "untrusted_sources": untrusted_sources,
         "sensitive_sources": sensitive_sources,
@@ -110,6 +120,9 @@ def compile_manifests(
         "value_policies": value_policies,
         "consequence_overrides": dict(sorted(overrides.items())),
     }
+    if integrity:
+        canon["integrity_sinks"] = integrity
+    return canon
 
 
 def governor_kwargs(
@@ -131,6 +144,9 @@ def governor_kwargs(
     }
     if canon["sensitive_sources"]:
         kwargs["sensitive_sources"] = set(canon["sensitive_sources"])  # type: ignore[arg-type]
+    if canon.get("integrity_sinks"):
+        _require_integrity_sinks_support()
+        kwargs["integrity_sinks"] = set(canon["integrity_sinks"])  # type: ignore[arg-type]
     if canon["value_policies"]:
         # axor-core wants dict[str, list[ValuePredicate]] — objects with
         # `.check()`. Handing it the nested `{sink: {arg: {"enum": [...]}}}` made
@@ -174,6 +190,7 @@ def governance_yaml(
     _yaml_list(lines, "untrusted_sources", canon["untrusted_sources"])  # type: ignore[arg-type]
     _yaml_list(lines, "sensitive_sources", canon["sensitive_sources"])  # type: ignore[arg-type]
     _yaml_list(lines, "egress_sinks", canon["egress_sinks"])  # type: ignore[arg-type]
+    _yaml_list(lines, "integrity_sinks", canon.get("integrity_sinks") or [])  # type: ignore[arg-type]
     driving: dict[str, list[str]] = canon["driving_args"]  # type: ignore[assignment]
     if driving:
         lines.append("driving_args:")
@@ -191,6 +208,22 @@ def governance_yaml(
                 lines.append("      allowed:")
                 lines.extend(f"        - {_q(v)}" for v in spec["enum"])
     return "\n".join(lines) + "\n"
+
+
+def _require_integrity_sinks_support() -> None:
+    """Fail loudly on an axor-core that predates ``integrity_sinks`` rather than
+    let the governor die on an unexpected keyword — or, worse, run the manifest
+    with its integrity sinks silently ungated."""
+    import inspect
+
+    from axor_core.governor import ToolCallGovernor
+
+    if "integrity_sinks" not in inspect.signature(ToolCallGovernor).parameters:
+        raise RuntimeError(
+            "these manifests declare an integrity sink (a WRITE tool with "
+            "driving_args), and the installed axor-core's ToolCallGovernor has no "
+            "integrity_sinks — upgrade axor-core"
+        )
 
 
 def _yaml_list(lines: list[str], key: str, values: list[str]) -> None:

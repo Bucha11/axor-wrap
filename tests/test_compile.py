@@ -100,12 +100,42 @@ class CompileTest(unittest.TestCase):
         self.assertIn("kind: enum", text)
         self.assertIn('- "alice@corp.com"', text)
 
+    def test_a_write_with_driving_args_is_an_integrity_sink(self) -> None:
+        """A WRITE the attacker must not steer (its driving args are declared) is
+        an axor-core integrity sink: integrity check only, no floor."""
+        canon = compile_manifests(MANIFESTS)
+        self.assertEqual(canon["integrity_sinks"], ["update_crm"])
+        self.assertNotIn("update_crm", canon["egress_sinks"])
+
+    def test_a_write_without_driving_args_is_no_sink(self) -> None:
+        canon = compile_manifests([manifest("touch", "WRITE")])
+        self.assertNotIn("integrity_sinks", canon)
+
+    def test_a_write_that_can_resolve_to_export_is_an_egress_sink_only(self) -> None:
+        m = manifest("send_or_draft", "WRITE", driving=["recipient"],
+                     resolve=[{"when": {"recipient": {"not_in": "$company"}}, "class": "EXPORT"}])
+        canon = compile_manifests([m])
+        self.assertEqual(canon["egress_sinks"], ["send_or_draft"])
+        self.assertNotIn("integrity_sinks", canon)
+
+    def test_no_integrity_sink_keeps_the_compiled_form_unchanged(self) -> None:
+        """The key appears only when some tool is one — so every manifest set that
+        has none compiles, and hashes, exactly as before (parity with axor-lab)."""
+        canon = compile_manifests([m for m in MANIFESTS if m["id"] != "update_crm"])
+        self.assertNotIn("integrity_sinks", canon)
+
+    def test_integrity_sinks_reach_the_governor_and_the_yaml(self) -> None:
+        self.assertEqual(governor_kwargs(MANIFESTS)["integrity_sinks"], {"update_crm"})
+        text = governance_yaml(MANIFESTS)
+        self.assertIn('integrity_sinks:\n  - "update_crm"', text)
+
     def test_governance_yaml_parses_and_matches_governance_config_keys(self) -> None:
         # stdlib-only structural check: every top-level key is a GovernanceConfig field
         text = governance_yaml(MANIFESTS, policy={"allowlist": ["a@b.c"]})
         known = {"untrusted_sources", "sensitive_sources", "egress_sinks", "positional_sinks",
-                 "imperative_sinks", "benign_tools", "value_policies", "driving_args",
-                 "consequence_overrides", "mode", "workspace", "profile", "federation"}
+                 "imperative_sinks", "integrity_sinks", "benign_tools", "value_policies",
+                 "driving_args", "consequence_overrides", "mode", "workspace", "profile",
+                 "federation", "integrity_default"}
         for line in text.splitlines():
             if line and not line.startswith((" ", "#")):
                 self.assertIn(line.rstrip(":"), known, line)
