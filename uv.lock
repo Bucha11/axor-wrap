@@ -17,7 +17,7 @@ wheels = [
 
 [[package]]
 name = "axor-core"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "../axor-core" }
 
 [package.metadata]
@@ -35,35 +35,35 @@ provides-extras = ["federation", "config", "dev", "mutation"]
 
 [[package]]
 name = "axor-wrap"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
+dependencies = [
+    { name = "axor-core" },
+]
 
 [package.optional-dependencies]
 dev = [
+    { name = "cryptography" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
-kernel = [
-    { name = "axor-core" },
-]
 plane = [
-    { name = "axor-core" },
     { name = "cryptography" },
     { name = "httpx" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "axor-core", marker = "extra == 'kernel'", editable = "../axor-core" },
-    { name = "axor-core", marker = "extra == 'plane'", editable = "../axor-core" },
+    { name = "axor-core", editable = "../axor-core" },
+    { name = "cryptography", marker = "extra == 'dev'", specifier = ">=42.0" },
     { name = "cryptography", marker = "extra == 'plane'", specifier = ">=42.0" },
     { name = "httpx", marker = "extra == 'plane'", specifier = ">=0.27" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
 ]
-provides-extras = ["kernel", "plane", "dev"]
+provides-extras = ["plane", "dev"]
 
 [[package]]
 name = "certifi"
