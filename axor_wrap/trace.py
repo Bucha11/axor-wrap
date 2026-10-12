@@ -73,9 +73,22 @@ class RecordedCall:
     """
 
     tool: str
+    # The arguments the kernel CHECKED (``decision.args`` — prepared under a
+    # consumption contract). Kept under its original name: every consumer of a
+    # recorded call reads it as the arguments the verdict is about.
     args: dict[str, Any]
     executed: bool = False
     result: Any = None
+    # What actually ran, when something ran. Equal to ``args`` after an ALLOW. An
+    # observe-only arm that executes a DENY runs the agent's raw proposal instead,
+    # and ``enforcement_bypassed`` marks that: the effect then belongs to
+    # ``executed_args``, not to the checked set.
+    executed_args: dict[str, Any] | None = None
+    enforcement_bypassed: bool = False
+
+    @property
+    def checked_args(self) -> dict[str, Any]:
+        return self.args
 
 
 EVERY_INTENT = "every_intent"
@@ -433,8 +446,26 @@ def build_trace(
             produced = _mint_untrusted_fields(
                 ledger, by_id.get(call.tool, {}), call.tool, call.result,
             )
-            events.append({"seq": seq, "node": NODE_ROOT, "type": "tool_result",
-                           "tool": call.tool, "produces_value_ids": produced})
+            result_event: dict[str, Any] = {
+                "seq": seq, "node": NODE_ROOT, "type": "tool_result",
+                "tool": call.tool, "produces_value_ids": produced,
+            }
+            if call.enforcement_bypassed:
+                # A DENY that ran anyway: name the call, and when what ran is not
+                # what was checked, bind the executed arguments — a reader must not
+                # credit the effect to the checked set. A value that differs only
+                # in representation keeps the kernel's reading of that argument.
+                result_event["call_id"] = call_id
+                executed = call.executed_args if call.executed_args is not None else call.args
+                if executed != call.args:
+                    result_event["arg_bindings"] = {
+                        name: (arg_bindings[name]
+                               if name in call.args and call.args[name] == value
+                               else ledger.mint_argument(call.tool, name, value,
+                                                         refs.get(name, {})))
+                        for name, value in executed.items()
+                    }
+            events.append(result_event)
             seq += 1
 
     producer: dict[str, Any] = {

@@ -28,11 +28,35 @@ ENFORCEMENT_ON = "on"
 ENFORCEMENT_OFF = "off"
 from axor_wrap.errors import (
     AdmissionHeld,
+    KernelIncompatibleError,
     KernelNotInstalledError,
     ToolDenied,
     UnknownToolError,
 )
 from axor_wrap.trace import SessionRecorder
+
+
+def _require_contract_kernel() -> None:
+    """Consumption contracts need a kernel that implements them AND returns the
+    prepared arguments it judged. Checked at construction, so an incompatible
+    install fails before any call rather than by quietly running raw proposals."""
+    try:
+        import inspect
+
+        from axor_core.governor import GovernanceDecision, ToolCallGovernor
+        import axor_core.kernel.consumption  # noqa: F401
+    except ImportError as exc:
+        raise KernelIncompatibleError(
+            "consumption contracts need an axor-core that provides "
+            "axor_core.kernel.consumption (the release that adds field_contracts)"
+        ) from exc
+    params = inspect.signature(ToolCallGovernor.__init__).parameters
+    fields = getattr(GovernanceDecision, "__dataclass_fields__", {})
+    if "field_contracts" not in params or "args" not in fields:
+        raise KernelIncompatibleError(
+            "the installed axor-core does not accept field_contracts or does not "
+            "return GovernanceDecision.args — upgrade axor-core"
+        )
 
 
 def _kernel_version() -> str | None:
@@ -128,6 +152,17 @@ class WrappedToolset:
         self.policy = dict(policy) if policy else None
         self.inputs = dict(inputs) if inputs else None
         self.config = governor_kwargs(self.manifests, policy, inputs)
+        # Tools whose execution MUST use the kernel's prepared arguments. For
+        # these there is no fallback to the raw proposal (see `call`).
+        self._contracted = frozenset(field_contracts or ())
+        if field_contracts or consumption_attested:
+            if governor is not None:
+                raise ValueError(
+                    "field_contracts / consumption_attested configure the governor this "
+                    "toolset builds; an injected governor would not apply them — pass "
+                    "them to that governor instead"
+                )
+            _require_contract_kernel()
         if field_contracts:
             self.config["field_contracts"] = dict(field_contracts)
         if consumption_attested:
@@ -247,6 +282,13 @@ class WrappedToolset:
         # runs what the agent proposed, because that is what an ungoverned agent
         # would have run.
         judged = getattr(decision, "args", None)
+        if judged is None and decision.allowed and name in self._contracted:
+            # A contract was requested and the kernel did not hand back what it
+            # judged. Executing the raw proposal would run a value no gate checked.
+            raise KernelIncompatibleError(
+                f"tool {name!r} has a consumption contract but the kernel returned no "
+                f"prepared arguments — refusing to execute the raw proposal"
+            )
         call_args = dict(judged) if judged is not None else dict(args)
         # recorded at the moment the kernel is consulted, so the recorder stays
         # 1:1 and in order with the kernel's own events — and with the argument
@@ -259,10 +301,16 @@ class WrappedToolset:
         # register_output still runs, so a denied-but-executed call's output
         # taints the ledger exactly as it would have — which is the whole point
         # of measuring what an UNGOVERNED agent actually does.
-        output = self._tools[name](**call_args)
+        # An observe-only DENY runs what the agent proposed (an unwrapped agent's
+        # call), recorded apart from the checked set; an ALLOW runs the checked set.
+        bypassed = not decision.allowed
+        executed_args = dict(args) if bypassed else call_args
+        output = self._tools[name](**executed_args)
         self._governor.register_output(decision, output)  # type: ignore[attr-defined]
         if recorded is not None:
             recorded.executed, recorded.result = True, output
+            recorded.executed_args = executed_args
+            recorded.enforcement_bypassed = bypassed
         return output
 
     def trace(

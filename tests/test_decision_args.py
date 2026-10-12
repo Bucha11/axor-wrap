@@ -14,7 +14,7 @@ import unittest
 
 from axor_core.kernel.consumption import FieldContract, FieldKind, SinkContract
 
-from axor_wrap.errors import ToolDenied
+from axor_wrap.errors import KernelIncompatibleError, ToolDenied
 from axor_wrap.runtime import ENFORCEMENT_OFF, WrappedToolset, wrap_callables
 
 ALLOWED = "GB29NWBK60161331926819"
@@ -82,14 +82,58 @@ class TestTheCallableReceivesThePreparedSet(unittest.TestCase):
         send(recipient=ALLOWED, amount="7")
         self.assertEqual(bank.transfers, [(ALLOWED, 7)])
 
-    def test_observe_only_runs_what_the_agent_proposed(self) -> None:
-        """The ungoverned arm measures what an unwrapped agent does: a denied call
-        carries no prepared set, so the raw proposal runs and is recorded."""
+    def test_observe_only_runs_what_the_agent_proposed_and_records_it_apart(self) -> None:
+        """The ungoverned arm measures what an unwrapped agent does: a DENY runs
+        the raw proposal. The record keeps the checked set, what ran, and the
+        fact that enforcement was bypassed — three different things."""
         bank = Bank()
         toolset = _toolset(bank, field_contracts=CONTRACTS, enforcement=ENFORCEMENT_OFF,
                            record=True)
-        toolset.call("send_money", {"recipient": ALLOWED})
-        self.assertEqual(bank.transfers, [(ALLOWED, 50_000.0)])
+        # value-policy deny AFTER preparation: checked {amount: 7, subject: ""},
+        # executed the raw {amount: "7"} to a non-allowlisted account
+        toolset.call("send_money", {"recipient": ATTACKER, "amount": "7"})
+        self.assertEqual(bank.transfers, [(ATTACKER, "7")])
+        rec = toolset._recorder.calls[0]  # type: ignore[union-attr]
+        self.assertEqual(rec.checked_args, {"recipient": ATTACKER, "amount": 7, "subject": ""})
+        self.assertEqual(rec.executed_args, {"recipient": ATTACKER, "amount": "7"})
+        self.assertTrue(rec.enforcement_bypassed)
+
+    def test_an_allowed_call_records_identical_checked_and_executed_sets(self) -> None:
+        bank = Bank()
+        toolset = _toolset(bank, field_contracts=CONTRACTS, record=True)
+        toolset.call("send_money", {"recipient": ALLOWED, "amount": "7"})
+        rec = toolset._recorder.calls[0]  # type: ignore[union-attr]
+        self.assertEqual(rec.executed_args, rec.checked_args)
+        self.assertFalse(rec.enforcement_bypassed)
+
+    def test_the_trace_binds_the_executed_arguments_of_a_bypassed_deny(self) -> None:
+        import json
+        from pathlib import Path
+
+        import axor_core
+        from axor_wrap.trace import build_trace
+
+        bank = Bank()
+        toolset = _toolset(bank, field_contracts=CONTRACTS, enforcement=ENFORCEMENT_OFF,
+                           record=True)
+        toolset.call("send_money", {"recipient": ATTACKER, "amount": "7"})
+        trace = build_trace(
+            calls=toolset._recorder.calls,  # type: ignore[union-attr]
+            trace_events=toolset._governor.trace_events,  # type: ignore[attr-defined]
+            manifests=MANIFESTS, enforcement=ENFORCEMENT_OFF,
+            trial={"trial_id": "t1"}, inputs_digest="sha256:0",
+        )
+        by_type = {e["type"]: e for e in trace["events"]}
+        intent, result = by_type["tool_call_intent"], by_type["tool_result"]
+        self.assertEqual(result["call_id"], intent["call_id"])
+        self.assertEqual(set(intent["arg_bindings"]), {"recipient", "amount", "subject"})
+        self.assertEqual(set(result["arg_bindings"]), {"recipient", "amount"})
+        self.assertFalse(by_type["gate_decision"]["decision"]["enforced"])
+        # still a valid trace/v1 event (the fields are the schema's own)
+        schema = json.loads((Path(axor_core.__file__).parent / "contracts" / "schemas"
+                             / "trace.schema.json").read_text())
+        allowed = set(schema["$defs"]["event"]["properties"])
+        self.assertLessEqual(set(result), allowed)
 
     def test_the_recorded_arguments_are_the_judged_ones(self) -> None:
         bank = Bank()
@@ -99,6 +143,65 @@ class TestTheCallableReceivesThePreparedSet(unittest.TestCase):
         self.assertEqual(recorded.args, {"recipient": ALLOWED, "amount": 3, "subject": ""})
         kernel_args = toolset._governor.trace_events[0].payload["args"]  # type: ignore[attr-defined]
         self.assertEqual(kernel_args, recorded.args)
+
+
+class TestNoUnsafeFallback(unittest.TestCase):
+    def test_contracts_cannot_be_handed_to_an_injected_governor(self) -> None:
+        with self.assertRaises(ValueError):
+            WrappedToolset({"send_money": Bank().send_money}, MANIFESTS, policy=POLICY,
+                           governor=object(), field_contracts=CONTRACTS)
+
+    def test_a_kernel_that_returns_no_prepared_args_is_refused_at_call_time(self) -> None:
+        from unittest import mock
+
+        class _OldDecision:
+            allowed, reason, category = True, "approved", "approved"
+
+        class _OldGovernor:
+            trace_events: list = []
+
+            def evaluate(self, name, args):
+                return _OldDecision()
+
+            def register_output(self, decision, output):
+                pass
+
+        bank = Bank()
+        with mock.patch("axor_wrap.runtime._build_governor", return_value=_OldGovernor()):
+            toolset = _toolset(bank, field_contracts=CONTRACTS)
+        with self.assertRaises(KernelIncompatibleError):
+            toolset.call("send_money", {"recipient": ALLOWED, "amount": "7"})
+        self.assertEqual(bank.transfers, [])
+
+    def test_a_kernel_without_contract_support_is_refused_at_construction(self) -> None:
+        from unittest import mock
+
+        class _OldToolCallGovernor:
+            def __init__(self, *, value_policies=None):
+                pass
+
+        with mock.patch("axor_core.governor.ToolCallGovernor", _OldToolCallGovernor):
+            with self.assertRaises(KernelIncompatibleError):
+                _toolset(Bank(), field_contracts=CONTRACTS)
+
+    def test_without_contracts_an_old_kernel_still_works(self) -> None:
+        from unittest import mock
+
+        class _OldDecision:
+            allowed, reason, category = True, "approved", "approved"
+
+        class _OldGovernor:
+            def evaluate(self, name, args):
+                return _OldDecision()
+
+            def register_output(self, decision, output):
+                pass
+
+        bank = Bank()
+        toolset = WrappedToolset({"send_money": bank.send_money}, MANIFESTS, policy=POLICY,
+                                 governor=_OldGovernor())
+        toolset.call("send_money", {"recipient": ALLOWED, "amount": 5})
+        self.assertEqual(bank.transfers, [(ALLOWED, 5)])
 
 
 if __name__ == "__main__":
