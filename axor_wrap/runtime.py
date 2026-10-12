@@ -77,6 +77,8 @@ class WrappedToolset:
         record: bool = False,
         inputs: dict[str, object] | None = None,
         node_id: str = "",
+        field_contracts: dict[str, object] | None = None,
+        consumption_attested: "set[str] | frozenset[str] | None" = None,
     ) -> None:
         """``governor`` overrides construction (tests / custom kernels); otherwise
         the governor is built lazily-imported from axor-core with the kwargs
@@ -112,12 +114,24 @@ class WrappedToolset:
         governor emits events with no node, which is fine for a single-session
         trace built by :meth:`trace` (the document names its own trial) but not
         for a caller assembling a ``DecisionTrace`` or pushing
-        :meth:`kernel_events` for a named node."""
+        :meth:`kernel_events` for a named node.
+
+        ``field_contracts`` / ``consumption_attested`` are the kernel's
+        consumption contracts (``axor_core.kernel.consumption``): per tool, the
+        fields its callable reads and how. With a contract the kernel prepares
+        each call (defaults, declared conversions, closed field set) before any
+        gate, and the callable is invoked with THAT prepared set — the arguments
+        the kernel judged — never with the model's raw proposal. Tools without a
+        contract run with their arguments unchanged."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
         self.policy = dict(policy) if policy else None
         self.inputs = dict(inputs) if inputs else None
         self.config = governor_kwargs(self.manifests, policy, inputs)
+        if field_contracts:
+            self.config["field_contracts"] = dict(field_contracts)
+        if consumption_attested:
+            self.config["consumption_attested"] = set(consumption_attested)
         self.node_id = node_id
         # node_id is the governor's, not part of the compiled governance
         # contract — keeping it out of `config` keeps `config` comparable
@@ -225,17 +239,27 @@ class WrappedToolset:
         if self._admission is not None and not self._admission():
             raise AdmissionHeld("paused-or-stopped")
         decision = self._governor.evaluate(name, args)  # type: ignore[attr-defined]
+        # The argument set the kernel judged. For a tool with a consumption
+        # contract it is the prepared set (defaults materialised, declared
+        # conversions applied) and it is the ONLY set that may reach the
+        # callable: executing the raw proposal instead would run a value no gate
+        # saw. A denial carries no prepared set; the observe-only arm below then
+        # runs what the agent proposed, because that is what an ungoverned agent
+        # would have run.
+        judged = getattr(decision, "args", None)
+        call_args = dict(judged) if judged is not None else dict(args)
         # recorded at the moment the kernel is consulted, so the recorder stays
-        # 1:1 and in order with the kernel's own events. A call refused before
-        # this line (unknown tool, admission held) produced no verdict either.
-        recorded = self._recorder.evaluated(name, args) if self._recorder else None
+        # 1:1 and in order with the kernel's own events — and with the argument
+        # set those events name. A call refused before this line (unknown tool,
+        # admission held) produced no verdict either.
+        recorded = self._recorder.evaluated(name, call_args) if self._recorder else None
         if not decision.allowed and self.enforcement == ENFORCEMENT_ON:
             raise ToolDenied(decision.reason, decision.category)
         # observe-only: the verdict is recorded and reported, the call proceeds.
         # register_output still runs, so a denied-but-executed call's output
         # taints the ledger exactly as it would have — which is the whole point
         # of measuring what an UNGOVERNED agent actually does.
-        output = self._tools[name](**args)
+        output = self._tools[name](**call_args)
         self._governor.register_output(decision, output)  # type: ignore[attr-defined]
         if recorded is not None:
             recorded.executed, recorded.result = True, output
@@ -294,6 +318,8 @@ def wrap_callables(
     record: bool = False,
     inputs: dict[str, object] | None = None,
     node_id: str = "",
+    field_contracts: dict[str, object] | None = None,
+    consumption_attested: "set[str] | frozenset[str] | None" = None,
 ) -> dict[str, Callable[..., object]]:
     """Wrapped drop-in callables sharing ONE governor session.
 
@@ -315,5 +341,6 @@ def wrap_callables(
     toolset = WrappedToolset(
         tools, manifests, policy=policy, governor=governor, admission=admission,
         enforcement=enforcement, record=record, inputs=inputs, node_id=node_id,
+        field_contracts=field_contracts, consumption_attested=consumption_attested,
     )
     return toolset.callables()
