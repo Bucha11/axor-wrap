@@ -250,6 +250,13 @@ class WrappedToolset:
             raise UnknownToolError(name, self.tool_names)
         if self._admission is not None and not self._admission():
             raise AdmissionHeld("paused-or-stopped")
+        # one call of the session at a time, from check to registration (the daemon's
+        # per-session lock): a framework that calls tools from several threads cannot
+        # have an egress decided before a concurrent secret read is registered
+        with self._gate.lock:
+            return self._call(name, args)
+
+    def _call(self, name: str, args: dict[str, object]) -> object:
         verdict = self._gate.check(name, args)
         # recorded at the moment the kernel is consulted, so the recorder stays
         # 1:1 and in order with the kernel's own events. A call refused before
