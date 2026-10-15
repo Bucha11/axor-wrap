@@ -133,5 +133,52 @@ class KernelGateTest(unittest.TestCase):
         self.assertEqual(e.exception.category, "taint_enforcement")
 
 
+# MODEL.md 9.15: a description grant needs the platform's parser of the source's output
+SLACK = {
+    "grant_args": {"add_user_to_channel": {"channel": "string", "user": "string"}},
+    "egress_sinks": ["add_user_to_channel"],
+    "driving_args": {"add_user_to_channel": ["channel", "user"]},
+    "operator_sets": {"add_user_to_channel": {"channel": ["general", "random", "private"]}},
+    "operator_sets_refuse_above": "benign",
+    "consequence_overrides": {"add_user_to_channel": "consequential"},
+    "description_sources": {"get_channels": [{"entity": "channel", "shape": "names", "complete": True}]},
+    "description_targets": {"channel": {"value": ["add_user_to_channel.channel"]}},
+}
+CHANNELS = ["general", "random", "private", "External_0"]
+DESCRIBED = "Add Charlie to the channel starting with External"
+ADD = {"channel": "External_0", "user": "Charlie"}
+
+
+def channels_parser(tool, result):
+    """The operator's parser for this platform: get_channels returns the list itself."""
+    return list(result) if tool == "get_channels" and isinstance(result, list) else None
+
+
+class DescriptionParserTest(unittest.TestCase):
+    """Without the operator's parser no description grant is built: the described call is
+    refused, never admitted."""
+
+    def run_described(self, structured):
+        ran: list = []
+        tools = {"get_channels": lambda: list(CHANNELS),
+                 "add_user_to_channel": lambda **a: ran.append(a) or "added"}
+        ts = WrappedToolset(tools, [], governance=SLACK, structured=structured)
+        ts.begin(DESCRIBED)
+        ts.call("get_channels", {})
+        return ts, ran
+
+    def test_with_the_parser_the_described_call_runs(self):
+        ts, ran = self.run_described(channels_parser)
+        self.assertEqual(ts.call("add_user_to_channel", ADD), "added")
+        self.assertEqual(ran, [ADD])
+
+    def test_without_the_parser_the_described_call_is_refused(self):
+        ts, ran = self.run_described(None)
+        with self.assertRaises(ToolDenied) as e:
+            ts.call("add_user_to_channel", ADD)
+        self.assertEqual(e.exception.category, "operator_set")
+        self.assertEqual(ran, [])
+
+
 if __name__ == "__main__":
     unittest.main()

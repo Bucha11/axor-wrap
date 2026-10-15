@@ -125,8 +125,11 @@ class WrappedToolset:
         floor modes) that the manifests cannot express; given, the governor is
         built from it instead of from the compiled manifests. ``confirmer`` is the
         operator's L4 channel; ``structured`` the platform's parser of a
-        description source's output (MODEL.md 9.15). Call :meth:`begin` with the
-        user's request before the agent's first call."""
+        description source's output (MODEL.md 9.15), ``structured(tool, result) ->
+        structure | None``, written by the operator (this package ships none): without
+        it no description grant is computed and a call only a description would
+        authorize is refused. Call :meth:`begin` with the user's request before the
+        agent's first call."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
         self.policy = dict(policy) if policy else None
