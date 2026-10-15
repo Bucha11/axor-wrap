@@ -36,7 +36,7 @@ jobs:
         # requirement from PyPI and the whole install fails. The plane transport
         # deps go in directly rather than via the [plane] extra.
         run: |
-          pip install "axor-core @ git+https://github.com/Bucha11/axor-core@1d9549aceb31e95d0fecf3e18cbe42e29b8405e4"  # claude/model-m1: the kernel the gate is built for
+          pip install "axor-core @ git+https://github.com/Bucha11/axor-core@618c4a96b5f61e88c8f7bf213a3c881df3f80d6d"  # claude/model-m1: the kernel the gate is built for
           pip install -e ".[dev]"
           pip install "httpx>=0.27" "cryptography>=42.0"
 
