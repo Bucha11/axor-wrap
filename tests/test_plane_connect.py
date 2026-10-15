@@ -140,6 +140,9 @@ class _AllowGovernor:
     def register_output(self, decision: object, output: object) -> None:
         return None
 
+    def spend(self, decision: object, args: dict[str, object], call_key: str | None = None) -> None:
+        return None
+
 
 @unittest.skipUnless(HAS_PLANE, "requires axor-wrap[plane] (axor-core + httpx + cryptography)")
 class PlaneConnectorTest(unittest.TestCase):

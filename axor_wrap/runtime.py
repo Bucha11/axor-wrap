@@ -2,12 +2,14 @@
 
 ``WrappedToolset`` holds ``{name: callable}`` plus the tools' manifests, builds
 an ``axor_core.governor.ToolCallGovernor`` from the compiled config, and gates
-each call: ``evaluate → (deny → ToolDenied) → call → register_output``. With
-``enforcement="off"`` the same path runs and records, but a deny does not block
-— that is an UNGOVERNED arm, which is observed but not enforced, and is a
-different thing from an unwrapped agent that nothing observed at all. That is
-the exact usage contract the governor documents, and the same decision path the
-Control Plane and axor-lab's real-kernel backend run.
+each call through the kernel gate (``axor_wrap.gate.Gate``): ``evaluate → (deny →
+ToolDenied) → the resolved arguments + a reserved grant use → call → commit →
+register (and, with references, the agent's view)``. That is the daemon's order and
+the AgentDojo shim's. With ``enforcement="off"`` the same path runs and records, but
+a deny does not block — that is an UNGOVERNED arm, which is observed but not
+enforced, and is a different thing from an unwrapped agent that nothing observed at
+all. Only that arm ever executes a denied call; under ``"on"`` a denial raises
+before the callable is looked up.
 
 axor-core is a REQUIRED dependency — this module's whole job is gating through
 the real kernel, and a wrap that cannot gate is not a wrap. The import stays
@@ -23,6 +25,7 @@ import functools
 from typing import Callable
 
 from axor_wrap.compile import compile_manifests, governor_kwargs
+from axor_wrap.gate import Admitted, Gate
 
 ENFORCEMENT_ON = "on"
 ENFORCEMENT_OFF = "off"
@@ -77,6 +80,9 @@ class WrappedToolset:
         record: bool = False,
         inputs: dict[str, object] | None = None,
         node_id: str = "",
+        governance: object | None = None,
+        confirmer: object | None = None,
+        structured: Callable[[str, object], object] | None = None,
     ) -> None:
         """``governor`` overrides construction (tests / custom kernels); otherwise
         the governor is built lazily-imported from axor-core with the kwargs
@@ -112,7 +118,15 @@ class WrappedToolset:
         governor emits events with no node, which is fine for a single-session
         trace built by :meth:`trace` (the document names its own trial) but not
         for a caller assembling a ``DecisionTrace`` or pushing
-        :meth:`kernel_events` for a named node."""
+        :meth:`kernel_events` for a named node.
+
+        ``governance`` is a full kernel configuration (``GovernanceConfig``, its
+        YAML path or its mapping — task-scoped grants, references, operator sets,
+        floor modes) that the manifests cannot express; given, the governor is
+        built from it instead of from the compiled manifests. ``confirmer`` is the
+        operator's L4 channel; ``structured`` the platform's parser of a
+        description source's output (MODEL.md 9.15). Call :meth:`begin` with the
+        user's request before the agent's first call."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
         self.policy = dict(policy) if policy else None
@@ -122,10 +136,18 @@ class WrappedToolset:
         # node_id is the governor's, not part of the compiled governance
         # contract — keeping it out of `config` keeps `config` comparable
         # between two runs of the same contract on different nodes.
-        self._governor = (
-            governor if governor is not None
-            else _build_governor({**self.config, "node_id": node_id})
-        )
+        if governance is not None and governor is not None:
+            raise ValueError("pass governance (to build the governor) or governor, not both")
+        if governance is not None:
+            self._governor = Gate.from_config(
+                governance, confirmer=confirmer, node_id=node_id).governor
+        elif governor is not None:
+            self._governor = governor
+        else:
+            self._governor = _build_governor({
+                **self.config, "node_id": node_id,
+                **({"confirmer": confirmer} if confirmer is not None else {})})
+        self._gate = Gate(self._governor, structured=structured)
         self._admission = admission
         if enforcement not in (ENFORCEMENT_ON, ENFORCEMENT_OFF):
             raise ValueError(
@@ -212,31 +234,45 @@ class WrappedToolset:
         is already constructed."""
         self._admission = admission
 
+    def begin(self, task: str) -> None:
+        """The user's own request: trusted origin and the L1 grants it names."""
+        self._gate.begin(task)
+
     def call(self, name: str, args: dict[str, object]) -> object:
         """Gate and execute one tool call.
 
         Holds the call with ``AdmissionHeld`` when a bound admission predicate
-        reports the node paused/stopped; raises ``ToolDenied`` when the governor
-        denies; otherwise runs the callable and registers its output back into
-        the taint ledger.
+        reports the node paused/stopped; raises ``ToolDenied`` when the kernel
+        refuses; otherwise runs the callable on the arguments the kernel
+        resolved and returns its output as the agent may see it.
         """
         if name not in self._tools:
             raise UnknownToolError(name, self.tool_names)
         if self._admission is not None and not self._admission():
             raise AdmissionHeld("paused-or-stopped")
-        decision = self._governor.evaluate(name, args)  # type: ignore[attr-defined]
+        verdict = self._gate.check(name, args)
         # recorded at the moment the kernel is consulted, so the recorder stays
         # 1:1 and in order with the kernel's own events. A call refused before
         # this line (unknown tool, admission held) produced no verdict either.
         recorded = self._recorder.evaluated(name, args) if self._recorder else None
-        if not decision.allowed and self.enforcement == ENFORCEMENT_ON:
-            raise ToolDenied(decision.reason, decision.category)
-        # observe-only: the verdict is recorded and reported, the call proceeds.
-        # register_output still runs, so a denied-but-executed call's output
-        # taints the ledger exactly as it would have — which is the whole point
-        # of measuring what an UNGOVERNED agent actually does.
+        if isinstance(verdict, Admitted):
+            try:
+                output = self._tools[name](**verdict.args)
+            except BaseException:
+                self._gate.fail(verdict)
+                raise
+            view = self._gate.finish(verdict, name, output)
+            if recorded is not None:
+                recorded.executed, recorded.result = True, output
+            return view
+        if self.enforcement != ENFORCEMENT_OFF:
+            raise ToolDenied(verdict.reason, verdict.category)
+        # enforcement="off" ONLY (the ungoverned arm): the verdict is recorded and
+        # reported, and the agent's proposed call runs. register_output still runs,
+        # so a denied-but-executed call's output taints the ledger exactly as it
+        # would have — the point of measuring what an UNGOVERNED agent does.
         output = self._tools[name](**args)
-        self._governor.register_output(decision, output)  # type: ignore[attr-defined]
+        self._governor.register_output(verdict.decision, output)  # type: ignore[attr-defined]
         if recorded is not None:
             recorded.executed, recorded.result = True, output
         return output
@@ -294,6 +330,9 @@ def wrap_callables(
     record: bool = False,
     inputs: dict[str, object] | None = None,
     node_id: str = "",
+    governance: object | None = None,
+    confirmer: object | None = None,
+    structured: Callable[[str, object], object] | None = None,
 ) -> dict[str, Callable[..., object]]:
     """Wrapped drop-in callables sharing ONE governor session.
 
@@ -315,5 +354,6 @@ def wrap_callables(
     toolset = WrappedToolset(
         tools, manifests, policy=policy, governor=governor, admission=admission,
         enforcement=enforcement, record=record, inputs=inputs, node_id=node_id,
+        governance=governance, confirmer=confirmer, structured=structured,
     )
     return toolset.callables()

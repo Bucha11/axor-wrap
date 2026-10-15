@@ -50,6 +50,9 @@ class FakeGovernor:
     def register_output(self, decision: FakeDecision, output: object) -> None:
         self.registered.append((decision, output))
 
+    def spend(self, decision: FakeDecision, args: dict, call_key: str | None = None) -> None:
+        return None  # no task-scoped grants in this stand-in
+
 
 def make_tools() -> dict[str, object]:
     calls: list[str] = []

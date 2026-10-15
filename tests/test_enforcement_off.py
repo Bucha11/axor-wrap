@@ -87,6 +87,9 @@ class _DenyingGovernor:
     def register_output(self, decision: object, output: object) -> None:
         self.registered.append(str(output))
 
+    def spend(self, decision: object, args: dict[str, object], call_key: str | None = None) -> None:
+        return None
+
     @property
     def trace_events(self) -> list[TraceEvent]:
         return list(self._trace_events)
