@@ -91,6 +91,16 @@ class KernelGateTest(unittest.TestCase):
                 ts.call("send_money", {**PAY, "recipient": "US133000000121212121212"})
         self.assertEqual(calls, [])
 
+    def test_any_enforcement_value_but_off_refuses(self):
+        """At origin/main the test was ``enforcement == "on"``: setting the public attribute
+        to anything else after construction ran denied calls (fail-open)."""
+        calls: list = []
+        ts = self.toolset(calls)
+        ts.enforcement = "ON"
+        with self.assertRaises(ToolDenied):
+            ts.call("send_money", {**PAY, "recipient": "US133000000121212121212"})
+        self.assertEqual(calls, [])
+
     def test_observe_mode_is_the_only_one_that_executes_a_denied_call(self):
         calls: list = []
         ts = self.toolset(calls, enforcement="off")
