@@ -29,7 +29,14 @@ dependencies = [
     # Unlike axor-eval and axor-sentinel, nothing in this package looked at the
     # installed kernel, so the staleness was silent. tests/test_core_compatibility.py
     # is the alarm that was missing.
-    "axor-core>=0.10.2,<0.12",
+    #
+    # Same again for 0.12: its breaking changes are STRICT-only (record closure,
+    # a required consumption ground per guarded sink, the consequence and
+    # driving_args obligations) and this package compiles no STRICT governor.
+    # 223 tests pass against an installed 0.12.0; the only failure was
+    # test_core_compatibility.py refusing the version it ran on. Ceiling only,
+    # for the same reason as above.
+    "axor-core>=0.10.2,<0.13",
 ]
 
 [project.optional-dependencies]
