@@ -38,6 +38,15 @@ class KernelNotInstalledError(AxorWrapError, ImportError):
         )
 
 
+class KernelIncompatibleError(AxorWrapError):
+    """The installed kernel cannot honour what this toolset was configured with.
+
+    Raised when consumption contracts are requested from a kernel that does not
+    implement them, or that does not hand back the prepared arguments it judged.
+    Running the model's raw proposal in that case would execute a value no gate
+    checked, so the wrap refuses instead of falling back."""
+
+
 class UnknownToolError(AxorWrapError, KeyError):
     """A call named a tool the wrapped toolset does not hold."""
 
