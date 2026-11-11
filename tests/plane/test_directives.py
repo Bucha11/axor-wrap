@@ -102,3 +102,16 @@ async def test_end_to_end_the_cut_reaches_the_agents_context() -> None:
     assert "frag_web_3" not in {f.taint_mark for f in ex.last.context.visible_fragments}
     reported = next(o for o in plane.outbox if o["kind"] == "context_excision")
     assert reported["payload"]["refs"] == ["frag_web_3"]
+
+
+def test_posture_reads_pause_and_stop_without_awaiting():
+    from axor_wrap.plane.admission import PlaneAdmission
+    from axor_wrap.plane.session import PlaneSession
+
+    s = PlaneSession(node_id="n1")
+    adm = PlaneAdmission(s)
+    assert adm.posture() == "running"
+    s.paused = True
+    assert adm.posture() == "paused"
+    s.stopped = True
+    assert adm.posture() == "stopped"

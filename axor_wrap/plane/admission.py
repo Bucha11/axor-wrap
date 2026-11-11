@@ -27,6 +27,14 @@ class PlaneAdmission:
         delta). Safe to call from the client's SSE task."""
         self._changed.set()
 
+    def posture(self) -> str:
+        """``"stopped"``, ``"paused"`` or ``"running"`` — a non-blocking read for
+        runtimes that own their loop and cannot await (a sync LangChain agent
+        polls this at its model/tool boundaries)."""
+        if self._session.stopped:
+            return "stopped"
+        return "paused" if self._session.paused else "running"
+
     async def await_admission(self, node_id: str) -> bool:
         while True:
             if self._session.stopped:
