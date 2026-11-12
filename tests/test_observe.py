@@ -80,3 +80,13 @@ def test_silent_fail_result_is_not_tainted():
     rec.end_tool(r, '{"error": "tool_unavailable"}')
     result = [ln for ln in rec.pending_lines() if ln["kind"] == "tool_result"][0]
     assert result["payload"]["root"]["sources"] == []
+
+
+def test_a_started_call_ships_before_its_result():
+    rec = RunRecorder("n1")
+    r = rec.begin_tool("c1", "slow", {})
+    r.started = True
+    assert [ln["kind"] for ln in rec.pending_lines()] == ["tool_call"]
+    rec.end_tool(r, "done")
+    assert [ln["kind"] for ln in rec.pending_lines()] == ["tool_result"]
+    assert rec.pending_lines() == []

@@ -74,7 +74,9 @@ class ToolRecord:
     result: str = ""
     arg_refs: dict = field(default_factory=dict)
     finished: bool = False
-    sent: bool = False
+    started: bool = False      # admitted and executing: its call can ship now
+    call_sent: bool = False
+    sent: bool = False         # result (or a denied call) shipped
     fault: dict | None = None
 
 
@@ -135,22 +137,26 @@ class RunRecorder:
     # ── the plane trace ──────────────────────────────────────────────────────
 
     def pending_lines(self) -> list[dict]:
-        """Lines for tool calls finished since the last call — at most once."""
+        """Lines not shipped yet, each at most once: a call as soon as it is
+        admitted (``started``) — so a running run shows what it is doing —
+        and its result once it lands."""
         lines: list[dict] = []
         for rec in self.tools:
+            if not rec.call_sent and (rec.started or rec.finished):
+                rec.call_sent = True
+                if rec.fault is not None:
+                    lines.append({"kind": "fault_injected", "payload": dict(rec.fault)})
+                call = {"tool": rec.tool, "args": rec.args, "tool_call_id": rec.call_id}
+                if rec.arg_refs:
+                    call["arg_refs"] = rec.arg_refs
+                    call["arg_provenance"] = "substring"
+                line: dict = {"kind": "tool_call", "payload": call}
+                if rec.status == "denied":
+                    line.update(verdict="deny", gate="budget")
+                lines.append(line)
             if not rec.finished or rec.sent:
                 continue
             rec.sent = True
-            if rec.fault is not None:
-                lines.append({"kind": "fault_injected", "payload": dict(rec.fault)})
-            call = {"tool": rec.tool, "args": rec.args, "tool_call_id": rec.call_id}
-            if rec.arg_refs:
-                call["arg_refs"] = rec.arg_refs
-                call["arg_provenance"] = "substring"
-            line: dict = {"kind": "tool_call", "payload": call}
-            if rec.status == "denied":
-                line.update(verdict="deny", gate="budget")
-            lines.append(line)
             if rec.status == "denied":
                 continue
             lines.append({
