@@ -71,3 +71,12 @@ def test_link_takes_an_experiment_once():
         "id": "x", "faults": [{"tool": "t", "mode": "silent_fail"}]}})
     assert link.take_experiment()["faults"][0]["tool"] == "t"
     assert link.take_experiment() is None
+
+
+def test_silent_fail_result_is_not_tainted():
+    rec = RunRecorder("n1")
+    r = rec.begin_tool("c1", "fetch", {"url": "https://x"})
+    r.fault = {"tool": "fetch", "mode": "silent_fail", "seed": "s", "canary": ""}
+    rec.end_tool(r, '{"error": "tool_unavailable"}')
+    result = [ln for ln in rec.pending_lines() if ln["kind"] == "tool_result"][0]
+    assert result["payload"]["root"]["sources"] == []

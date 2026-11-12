@@ -159,7 +159,10 @@ class RunRecorder:
                 "payload": {
                     "tool": rec.tool, "status": rec.status,
                     "value_ref": rec.call_id,
-                    "root": {"sources": [taint_source(rec.args)], "sensitive": False},
+                    # a silent_fail result is the fault engine's error, not
+                    # anything the tool fetched: no untrusted source behind it
+                    "root": {"sources": [] if (rec.fault or {}).get("mode") == "silent_fail"
+                             else [taint_source(rec.args)], "sensitive": False},
                     "preview": rec.result[:120],
                 },
             })
