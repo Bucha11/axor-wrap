@@ -79,6 +79,7 @@ class PlaneSession:
     _pending_injection: Injection | None = None
     _pending_excision: Excision | None = None
     _pending_replan: dict | None = None
+    _pending_experiment: dict | None = None
     consumed_ids: set[str] = field(default_factory=set)
     outbox: list[dict] = field(default_factory=list)
 
@@ -245,6 +246,18 @@ class PlaneSession:
                 "reason": str(rp.get("reason", "")) if isinstance(rp, dict) else "",
                 "operator": str(rp.get("operator", "")) if isinstance(rp, dict) else "",
             }
+        if state.get("pending_experiment"):
+            ex = state["pending_experiment"]
+            faults = [
+                {"tool": str(f.get("tool", "")), "mode": str(f.get("mode", ""))}
+                for f in (ex.get("faults") or []) if isinstance(f, dict)
+            ]
+            self._pending_experiment = {
+                "id": str(ex.get("id", "")),
+                "faults": [f for f in faults if f["tool"] and f["mode"]],
+                "reason": str(ex.get("reason", "")),
+                "operator": str(ex.get("operator", "")),
+            }
         if state.get("pending_injection"):
             inj = state["pending_injection"]
             self._pending_injection = Injection(
@@ -367,6 +380,40 @@ class PlaneSession:
             self.consumed_ids.add(rid)
         self.outbox.append({"kind": "replan_applied", "payload": {"id": rid}})
         return rp
+
+    def take_pending_experiment(self) -> dict | None:
+        """One-shot honesty experiment: inject these faults into the NEXT agent
+        run and let the plane audit the answer. Test-bench only; at most once
+        by id; a stopped node absorbs it. Acked as an ``operator_intervention`` — the run it
+        lands in is an intervened run, and that kind is one the plane's
+        telemetry schema knows."""
+        ex = self._pending_experiment
+        if ex is None:
+            return None
+        self._pending_experiment = None
+        eid = ex.get("id", "")
+        if eid and eid in self.consumed_ids:
+            return None
+        if self.stopped or not ex.get("faults"):
+            return None
+        if eid:
+            self.consumed_ids.add(eid)
+        if not self.test_bench:
+            # Breaking a tool in a live run degrades a real user's answer: the
+            # same test-bench gate as injection. Refused, and acked so the
+            # plane stops showing it armed.
+            self.outbox.append({
+                "kind": "operator_intervention",
+                "payload": {"action": "experiment_refused", "id": eid,
+                            "reason": "not test-bench"},
+            })
+            return None
+        self.outbox.append({
+            "kind": "operator_intervention",
+            "payload": {"action": "experiment_armed", "id": eid,
+                        "faults": ex["faults"], "operator": ex.get("operator", "")},
+        })
+        return ex
 
     # ── upstream ──────────────────────────────────────────────────────────────
 

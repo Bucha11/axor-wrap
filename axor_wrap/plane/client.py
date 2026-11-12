@@ -49,6 +49,20 @@ def _httpx():  # noqa: ANN202 - module import guard
     return httpx
 
 
+def _consumed_key(event: dict) -> str | None:
+    """The desired-state one-shot an acknowledged outbox event consumed."""
+    kind = event.get("kind")
+    if kind == "injection_consumed":
+        return "pending_injection"
+    if kind == "context_excision":
+        return "pending_excision"
+    if kind == "operator_intervention" and \
+            (event.get("payload") or {}).get("action") in ("experiment_armed",
+                                                           "experiment_refused"):
+        return "pending_experiment"
+    return None
+
+
 class PlaneClient:
     def __init__(
         self,
@@ -140,9 +154,8 @@ class PlaneClient:
             return
         self._save_spool([])  # delivered — clear any prior spool
         for e in events:
-            if e["kind"] in ("injection_consumed", "context_excision"):
-                key = ("pending_injection" if e["kind"] == "injection_consumed"
-                       else "pending_excision")
+            key = _consumed_key(e)
+            if key is not None:
                 try:
                     async with httpx.AsyncClient(timeout=15.0) as client:
                         await client.post(
@@ -161,6 +174,24 @@ class PlaneClient:
             return
         httpx = _httpx()
         await self._post_telemetry(httpx, [self._line(e) for e in events], run_id=run_id)
+
+    async def post_ingest(self, events: list[dict], run_id: str,
+                          scenario: str = "live") -> dict:
+        """POST a finished run's trace to ``/v1/ingest/{run_id}`` — the route
+        on which the plane AUDITS a run: a batch carrying a ``claim`` gets its
+        EvidenceCases derived there (fabricated tool results, surfaced
+        injections). Returns the plane's answer ({stored, evidence})."""
+        httpx = _httpx()
+        lines = [self._line(e) for e in events]
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self._base}/v1/ingest/{run_id}",
+                json={"node_id": self.session.node_id, "scenario": scenario,
+                      "events": lines},
+                headers=self._auth({"Idempotency-Key": uuid.uuid4().hex}),
+            )
+            response.raise_for_status()
+            return response.json()
 
     async def post_reputation(self, payload: dict) -> bool:
         """POST one axor-sentinel ``snapshot_payload`` out-dial. True when the

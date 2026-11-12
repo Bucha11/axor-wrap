@@ -337,6 +337,14 @@ class PlaneConnector:
         assert self._client is not None
         await self._client.post_trace(events, run_id)
 
+    async def post_ingest(self, events: list[dict], run_id: str,
+                          scenario: str = "live") -> dict:
+        """A finished run for the plane to audit (see ``PlaneClient.post_ingest``)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.post_ingest(events, run_id, scenario)
+
     async def post_reputation(self, snapshot_payload: dict) -> bool:
         """A node's axor-sentinel ``ReputationSnapshot`` (``snapshot_payload``).
         axor-wrap does not import axor-sentinel; the dict is the contract."""

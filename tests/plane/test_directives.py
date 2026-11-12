@@ -127,3 +127,44 @@ def test_trace_line_keeps_recorded_verdict_columns():
     assert (line["verdict"], line["gate"], line["causal_root"]) == ("deny", "budget", "tc1")
     plain = c._line({"kind": "heartbeat"})
     assert plain["verdict"] is None and plain["payload"] == {}
+
+
+def test_experiment_is_one_shot_and_acked_as_intervention():
+    from axor_wrap.plane.client import _consumed_key
+    from axor_wrap.plane.session import PlaneSession
+
+    s = PlaneSession(node_id="n1", test_bench=True)
+    s.apply_snapshot(1, {"pending_experiment": {
+        "id": "x1", "faults": [{"tool": "fetch", "mode": "silent_fail"}, {"tool": ""}],
+        "operator": "op"}})
+    ex = s.take_pending_experiment()
+    assert ex["faults"] == [{"tool": "fetch", "mode": "silent_fail"}]
+    assert s.take_pending_experiment() is None
+    (ack,) = s.outbox
+    assert ack["kind"] == "operator_intervention"
+    assert _consumed_key(ack) == "pending_experiment"
+    # replayed snapshot after reconnect does not re-arm it
+    s.apply_snapshot(2, {"pending_experiment": {"id": "x1", "faults": [{"tool": "t", "mode": "silent_fail"}]}})
+    assert s.take_pending_experiment() is None
+
+
+def test_stopped_node_absorbs_experiment():
+    from axor_wrap.plane.session import PlaneSession
+
+    s = PlaneSession(node_id="n1")
+    s.apply_snapshot(1, {"stopped": True, "pending_experiment": {
+        "id": "x1", "faults": [{"tool": "t", "mode": "silent_fail"}]}})
+    assert s.take_pending_experiment() is None
+
+
+def test_experiment_refused_off_test_bench_and_still_cleared():
+    from axor_wrap.plane.client import _consumed_key
+    from axor_wrap.plane.session import PlaneSession
+
+    s = PlaneSession(node_id="n1")
+    s.apply_snapshot(1, {"pending_experiment": {
+        "id": "x1", "faults": [{"tool": "t", "mode": "silent_fail"}]}})
+    assert s.take_pending_experiment() is None
+    (ack,) = s.outbox
+    assert ack["payload"]["action"] == "experiment_refused"
+    assert _consumed_key(ack) == "pending_experiment"
