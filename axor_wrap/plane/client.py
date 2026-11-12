@@ -152,7 +152,36 @@ class PlaneClient:
                 except httpx.HTTPError:
                     pass  # best-effort; the ack itself was already delivered
 
-    async def _post_telemetry(self, httpx, lines: list[dict]) -> None:  # noqa: ANN001
+    async def post_trace(self, events: list[dict], run_id: str) -> None:
+        """POST trace lines (``{"kind", "payload", "causal_root"?, "gate"?,
+        "verdict"?}``) under ``run_id`` — one run per agent invocation, so the
+        plane's Replay shows each on its own. Best-effort: no heartbeat, no
+        outbox, nothing spooled; raises ``httpx.HTTPError`` after retries."""
+        if not events:
+            return
+        httpx = _httpx()
+        await self._post_telemetry(httpx, [self._line(e) for e in events], run_id=run_id)
+
+    async def post_reputation(self, payload: dict) -> bool:
+        """POST one axor-sentinel ``snapshot_payload`` out-dial. True when the
+        plane stored it; False when it was not newer than the one held (409) or
+        the plane was unreachable. Any other 4xx is a malformed snapshot and
+        raises, as for health checks."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    f"{self._base}/v1/plane/{self.session.node_id}/reputation",
+                    json=payload, headers=self._auth(),
+                )
+        except httpx.HTTPError:
+            return False
+        if response.status_code == 409:
+            return False
+        response.raise_for_status()
+        return True
+
+    async def _post_telemetry(self, httpx, lines: list[dict], run_id: str | None = None) -> None:  # noqa: ANN001
         """POST the batch, retrying transient failures with backoff. The
         Idempotency-Key makes a retried batch a no-op backend-side."""
         key = uuid.uuid4().hex
@@ -163,7 +192,7 @@ class PlaneClient:
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     response = await client.post(
                         f"{self._base}/v1/plane/{self.session.node_id}/telemetry",
-                        json={"run_id": self._run_id, "events": lines},
+                        json={"run_id": run_id or self._run_id, "events": lines},
                         headers=self._auth({"Idempotency-Key": key}),
                     )
                     response.raise_for_status()
@@ -271,9 +300,11 @@ class PlaneClient:
             "node_id": self.session.node_id,
             "kind": event["kind"],
             "ts": datetime.now(UTC).isoformat(),
-            "causal_root": None,
-            "gate": None,
-            "verdict": None,
+            # Carried when the producer recorded them (a framework that gates
+            # its own calls); None for posture events, as before.
+            "causal_root": event.get("causal_root"),
+            "gate": event.get("gate"),
+            "verdict": event.get("verdict"),
             "payload": event.get("payload", {}),
         }
 

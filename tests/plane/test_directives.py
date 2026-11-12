@@ -115,3 +115,15 @@ def test_posture_reads_pause_and_stop_without_awaiting():
     assert adm.posture() == "paused"
     s.stopped = True
     assert adm.posture() == "stopped"
+
+
+def test_trace_line_keeps_recorded_verdict_columns():
+    from axor_wrap.plane.client import PlaneClient
+    from axor_wrap.plane.session import PlaneSession
+
+    c = PlaneClient("http://cp.invalid", PlaneSession(node_id="n1"))
+    line = c._line({"kind": "tool_call", "verdict": "deny", "gate": "budget",
+                    "causal_root": "tc1", "payload": {"tool": "t"}})
+    assert (line["verdict"], line["gate"], line["causal_root"]) == ("deny", "budget", "tc1")
+    plain = c._line({"kind": "heartbeat"})
+    assert plain["verdict"] is None and plain["payload"] == {}

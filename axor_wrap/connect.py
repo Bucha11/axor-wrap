@@ -330,6 +330,21 @@ class PlaneConnector:
         assert self._client is not None
         await self._client.flush(extra_events, level=self.level())
 
+    async def post_trace(self, events: list[dict], run_id: str) -> None:
+        """Trace lines for one agent invocation, under its own ``run_id``."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        await self._client.post_trace(events, run_id)
+
+    async def post_reputation(self, snapshot_payload: dict) -> bool:
+        """A node's axor-sentinel ``ReputationSnapshot`` (``snapshot_payload``).
+        axor-wrap does not import axor-sentinel; the dict is the contract."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.post_reputation(snapshot_payload)
+
     async def post_health_check(self, health_payload: dict) -> bool:
         """Post a finished behavioral health check. True when the plane took it.
 

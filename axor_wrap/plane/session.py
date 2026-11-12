@@ -274,6 +274,13 @@ class PlaneSession:
         """Polled at the IntentLoop boundary only — never mid-effect."""
         return not (self.paused or self.stopped)
 
+    @property
+    def pending_excision(self) -> Excision | None:
+        """The queued excision, without consuming it — so a runtime whose
+        context is rebuilt per invocation can wait until the targets are in it
+        rather than having the provenance guard refuse an absent ref."""
+        return self._pending_excision
+
     def take_pending_injection(self) -> Injection | None:
         """At-most-once by id (protocol section 4). Returns the injection to
         add to context assembly for exactly one turn, or None."""
