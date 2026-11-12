@@ -320,6 +320,16 @@ class PlaneConnector:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
+    async def flush(self, extra_events: list[dict] | None = None) -> None:
+        """Deliver the outbox (operator acks) plus ``extra_events`` — kernel
+        trace lines a framework that owns its loop records itself — with a
+        heartbeat, now rather than at the next tick. Durable events survive a
+        failed POST (``PlaneClient.flush``); ``extra_events`` are best-effort."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        await self._client.flush(extra_events, level=self.level())
+
     async def post_health_check(self, health_payload: dict) -> bool:
         """Post a finished behavioral health check. True when the plane took it.
 
