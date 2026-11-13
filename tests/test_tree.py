@@ -190,3 +190,50 @@ async def test_the_tree_shows_itself_to_the_plane_as_it_goes(workspace) -> None:
     # a run appeared while it was running, before its stage finished
     assert any(any(r.get("status") == "running" for r in s["nodes"]["read"]["runs"])
                for s in snapshots)
+
+
+# ── the free plan: one agent family per tree ──────────────────────────────────
+
+MIXED = {"task": "t", "nodes": {"impl": {"agent": "claude-code"},
+                                "review": {"agent": "codex", "after": ["impl"]}}}
+ONE = {"task": "t", "nodes": {"impl": {"agent": "claude-code"},
+                              "review": {"agent": "claude-code", "after": ["impl"]}}}
+
+
+def test_one_agent_family_needs_no_plan() -> None:
+    from axor_wrap.agents.tree import plan_check
+
+    def never(*_a):  # noqa: ANN002, ANN202
+        raise AssertionError("a one-family tree asks nobody")
+
+    assert plan_check(parse_tree(ONE), None, fetch=never) is None
+
+
+def test_mixing_families_needs_a_paid_workspace() -> None:
+    from axor_wrap.agents.tree import plan_check
+
+    spec = parse_tree(MIXED)
+    no_plane = plan_check(spec, None)
+    assert no_plane and "claude-code + codex" in no_plane and "AXOR_PLANE_URL" in no_plane
+    free = plan_check(spec, "http://cp", "k", fetch=lambda *_: {"agent_families": 1})
+    assert free and "Upgrade" in free
+    assert plan_check(spec, "http://cp", "k", fetch=lambda *_: {"agent_families": None}) is None
+
+    def down(*_a):  # noqa: ANN002, ANN202
+        raise OSError("connection refused")
+
+    assert "could not be asked" in plan_check(spec, "http://cp", fetch=down)
+
+
+def test_cli_refuses_a_mixed_tree_without_a_paid_plane(tmp_path: Path,
+                                                      monkeypatch: pytest.MonkeyPatch,
+                                                      capsys: pytest.CaptureFixture) -> None:
+    from axor_wrap import cli
+
+    monkeypatch.delenv("AXOR_PLANE_URL", raising=False)
+    path = tmp_path / "axor.tree.json"
+    path.write_text(json.dumps(MIXED))
+    assert cli.main(["tree", "check", str(path)]) == cli.EXIT_OK
+    assert "paid plan" in capsys.readouterr().err
+    assert cli.main(["tree", "run", str(path), "--workspace", str(tmp_path)]) == cli.EXIT_EMPTY
+    assert "error: mixing agent families" in capsys.readouterr().err

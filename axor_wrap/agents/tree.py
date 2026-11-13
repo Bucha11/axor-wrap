@@ -418,6 +418,48 @@ class TreeRun:
     store: Any = None
 
 
+PAID_MIX = ("mixing agent families in one tree ({families}) is on the paid plan "
+            "(Coding, $25 / developer / month); on the free plan a tree uses one family, "
+            "e.g. Claude Code writing and Claude Code reviewing.")
+
+
+def agent_families(spec: TreeSpec) -> list[str]:
+    return sorted({n.agent for n in spec.nodes if n.agent})
+
+
+def plan_check(spec: TreeSpec, plane_url: str | None, ingest_key: str | None = None,
+               fetch: Any = None) -> str | None:
+    """Why this tree may not run on the workspace's plan, or None when it may.
+
+    One agent family is free. Several — Claude Code writing, Codex reviewing —
+    need a paid workspace, which only the plane can vouch for: without one,
+    or when it says the plan is free, a mixed tree is refused. Protection is
+    not gated here; each session's hooks deny locally whatever the plan."""
+    families = agent_families(spec)
+    if len(families) <= 1:
+        return None
+    msg = PAID_MIX.format(families=" + ".join(families))
+    if not plane_url:
+        return msg + " Set AXOR_PLANE_URL (and AXOR_INGEST_KEY) to a paid workspace."
+    try:
+        ent = (fetch or _fetch_entitlements)(plane_url, ingest_key)
+    except Exception as exc:  # noqa: BLE001 - unreachable plane: cannot vouch
+        return msg + f" The plane at {plane_url} could not be asked ({exc})."
+    if ent.get("agent_families") is None:
+        return None
+    return msg + " Upgrade the workspace on its Pricing page."
+
+
+def _fetch_entitlements(plane_url: str, ingest_key: str | None) -> dict:
+    import urllib.request
+
+    req = urllib.request.Request(plane_url.rstrip("/") + "/v1/license/entitlements")
+    if ingest_key:
+        req.add_header("Authorization", f"Bearer {ingest_key}")
+    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 - operator's plane
+        return json.loads(resp.read().decode())
+
+
 async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
                    start_sidecar: bool = True, plane: Any = None,
                    plane_url: str | None = None, env: dict | None = None) -> TreeRun:

@@ -187,6 +187,13 @@ sees it; the implementer is told which findings are verified. A node whose
 hooks never reported (ungoverned, as far as anyone can tell) hands on an
 untrusted answer, and the kernel will not let it drive the next spawn.
 
+**Plan.** A tree of one agent family (Claude Code planning, writing and
+reviewing) is free. Mixing families in one tree — Claude Code writing, Codex
+reviewing — needs a paid workspace: `tree run` asks the plane at
+`AXOR_PLANE_URL` (`/v1/license/entitlements`) and refuses a mixed tree on the
+free plan or with no plane to ask; `tree check` says so up front. Protection is
+never gated: every session's hooks deny locally whatever the plan.
+
 **Context flow.** A node is not handed everything its ancestors said. Each
 answer is cut into items (the plan, each finding, each text answer) with a ref
 (`read#2/f3`) and its provenance as the tree's ledger sees it. A node gets what

@@ -110,7 +110,9 @@ def _cmd_agents(args: argparse.Namespace) -> int:
 def _cmd_tree(args: argparse.Namespace) -> int:
     import asyncio
 
-    from axor_wrap.agents.tree import TreeSpecError, load_tree, run_tree
+    import os
+
+    from axor_wrap.agents.tree import TreeSpecError, load_tree, plan_check, run_tree
 
     try:
         spec = load_tree(args.spec)
@@ -123,10 +125,15 @@ def _cmd_tree(args: argparse.Namespace) -> int:
               for stage in spec.stages()]
     for i, line in enumerate(stages, 1):
         print(f"stage {i}: {line}")
+    blocked = plan_check(spec, os.environ.get("AXOR_PLANE_URL") or None,
+                         os.environ.get("AXOR_INGEST_KEY") or None)
     if args.action == "check":
+        if blocked:
+            print(f"note: {blocked}", file=sys.stderr)
         return EXIT_OK
-    import os
-
+    if blocked:
+        print(f"error: {blocked}", file=sys.stderr)
+        return EXIT_EMPTY
     run = asyncio.run(run_tree(spec, str(args.workspace),
                                plane_url=os.environ.get("AXOR_PLANE_URL") or None))
     print(json.dumps(run.report, indent=2, ensure_ascii=False))
