@@ -265,7 +265,64 @@ class TreeExecutor(Invokable):
         self.outputs: dict[str, list[dict]] = {}
         self.flow: dict[str, dict] = {}
         self.excised: list[str] = []
+        self.status = "running"
+        # each run of each node, by index: its plane node id once it started
+        self.runs: dict[str, dict[int, dict]] = {n.name: {} for n in spec.nodes}
+        # prompt → the runs it was issued for, in order (identical prompts —
+        # readers with no questions to share out — are told apart by order)
+        self._asked: dict[str, list[tuple[str, int]]] = {}
         self._bus = _Bus()
+
+    # ── the Control-Plane view ───────────────────────────────────────────────
+
+    def note_start(self, node_id: str, task: str) -> None:
+        """A child started (its executor says so, with the kernel's node id)."""
+        queue = self._asked.get(task)
+        if not queue:
+            return
+        name, i = queue.pop(0)
+        self.runs[name][i] = {"index": i, "node_id": node_id, "status": "running"}
+        self.publish()
+
+    def snapshot(self) -> dict:
+        nodes = {}
+        for n in self.spec.nodes:
+            # copies: a snapshot already handed to the plane must not change
+            runs = {i: dict(r) for i, r in self.runs.get(n.name, {}).items()}
+            for out in self.outputs.get(n.name, []):
+                entry = runs.setdefault(out["index"], {"index": out["index"]})
+                entry["status"] = out.get("status", "ok")
+                if out.get("reason"):
+                    entry["reason"] = str(out["reason"])[:300]
+                if n.out == "findings" and out.get("status") == "ok":
+                    try:
+                        checked = json.loads(out["output"])
+                        entry["verified"] = checked.get("verified", 0)
+                        entry["unverified"] = checked.get("unverified", 0)
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+            nodes[n.name] = {"agent": n.agent, "model": n.model, "count": n.count,
+                             "access": n.access, "out": n.out, "after": n.after,
+                             "runs": [runs[i] for i in sorted(runs)]}
+        items = [{"ref": i.ref, "node": i.node, "kind": i.kind,
+                  "headline": i.headline()[:300], "file": i.file, "line": i.line,
+                  "verified": i.verified, "untrusted": i.untrusted, "excised": i.excised}
+                 for i in self.store.items.values()]
+        return {"task": self.spec.task, "status": self.status,
+                "stages": [[n.name for n in s] for s in self.spec.stages()],
+                "nodes": nodes, "items": items, "flow": self.flow,
+                "excised": self.excised}
+
+    def publish(self, final: bool = False) -> None:
+        """Send the snapshot. The final one is waited for (``deliver``), so the
+        plane does not keep showing a finished tree as running."""
+        post = getattr(getattr(self.plane, "connector", None), "post_tree", None)
+        send = getattr(self.plane, "deliver" if final else "submit", None) \
+            or getattr(self.plane, "submit", None)
+        if post is None or send is None:
+            return
+        snap = self.snapshot()
+        send(lambda: post(snap))
 
     def get_bus(self) -> _Bus:
         return self._bus
@@ -300,6 +357,7 @@ class TreeExecutor(Invokable):
                         "tokens": flow["tokens"],
                     }
                     asked.append((node, i))
+                    self._asked.setdefault(prompt, []).append((node.name, i))
                     children.append({
                         "task": prompt,
                         "role": node.name,
@@ -311,6 +369,7 @@ class TreeExecutor(Invokable):
                         # by what it was made of.
                         "derived_from": flow["derived_from"],
                     })
+            self.publish()
             tid = f"stage-{k}"
             args = children[0] if len(children) == 1 else {"children": children}
             yield ExecutorEvent(kind=ExecutorEventKind.TOOL_USE,
@@ -321,6 +380,7 @@ class TreeExecutor(Invokable):
                 self.outputs.setdefault(node.name, []).append({"index": i, **outcome})
                 if outcome.get("status") == "ok":
                     self.store.add_answer(node.name, i, node.out, outcome["output"])
+            self.publish()
         yield ExecutorEvent(kind=ExecutorEventKind.TEXT,
                             payload={"text": json.dumps(self.report())},
                             node_id=envelope.node_id)
@@ -431,6 +491,8 @@ async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
     for role in roles:
         role.executor.context_store = store_path
     executor = TreeExecutor(spec, store, plane)
+    for role in roles:
+        role.executor.on_start = executor.note_start
     session = GovernedSession(
         executor=executor,
         capability_executor=CapabilityExecutor(),
@@ -443,7 +505,16 @@ async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
                                              federated_domains=set()),
     )
     ledger["session"] = session
-    await session.run(spec.task, policy=root_policy)
+    try:
+        await session.run(spec.task, policy=root_policy)
+    except BaseException:
+        executor.status = "failed"
+        executor.publish(final=True)
+        raise
+    every = [o for outs in executor.outputs.values() for o in outs]
+    executor.status = "done" if every and all(o.get("status") == "ok" for o in every) \
+        else "failed"
+    executor.publish(final=True)
     # the root is the tree run on the plane; its children are named by the
     # kernel's node ids, the same ids their hooks report under
     spawned = [
@@ -460,7 +531,8 @@ async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
                  for s in spawned]
         lines.append({"kind": "claim", "payload": {"text": json.dumps(run.report)[:4000],
                                                    "structured": True}})
-        plane.submit(lambda: plane.connector.post_trace(lines, tree_run))
+        send = getattr(plane, "deliver", None) or plane.submit
+        send(lambda: plane.connector.post_trace(lines, tree_run))
     if owned is not None:
         owned.close()
     return run

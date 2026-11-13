@@ -154,3 +154,39 @@ async def test_an_operator_cut_from_the_plane_never_reaches_the_next_stage(works
     run = await run_tree(spec(), workspace, plane=plane)
     assert run.report["excised"] == ["read#2/f0", "read#2/f1"]
     assert not any(r.startswith("read#2/") for r in run.report["flow"]["impl#0"]["pushed"])
+
+
+async def test_the_tree_shows_itself_to_the_plane_as_it_goes(workspace) -> None:
+    import asyncio
+
+    snapshots: list[dict] = []
+
+    class _Plane:
+        class connector:  # noqa: N801
+            @staticmethod
+            async def post_tree(snap):
+                snapshots.append(snap)
+
+            @staticmethod
+            async def post_trace(lines, run_id):
+                pass
+
+        @staticmethod
+        def submit(fn):
+            asyncio.get_event_loop().create_task(fn())
+
+    run = await run_tree(spec(), workspace, plane=_Plane())
+    await asyncio.sleep(0.1)
+    statuses = [s["status"] for s in snapshots]
+    assert statuses[-1] == "done" and "running" in statuses
+    last = snapshots[-1]
+    assert last["stages"] == [["plan"], ["read"], ["impl"]]
+    readers = last["nodes"]["read"]["runs"]
+    assert len(readers) == 5 and all(r["node_id"].startswith("node_") for r in readers)
+    assert {r["node_id"] for r in readers} == \
+        {s["child_id"] for s in run.spawned if s["role"] == "read"}
+    assert all(r["verified"] == 1 and r["unverified"] == 1 for r in readers)
+    assert any(i["kind"] == "finding" and i["verified"] for i in last["items"])
+    # a run appeared while it was running, before its stage finished
+    assert any(any(r.get("status") == "running" for r in s["nodes"]["read"]["runs"])
+               for s in snapshots)

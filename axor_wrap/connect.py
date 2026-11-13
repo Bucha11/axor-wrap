@@ -345,6 +345,13 @@ class PlaneConnector:
         assert self._client is not None
         return await self._client.post_ingest(events, run_id, scenario)
 
+    async def post_tree(self, snapshot: dict) -> bool:
+        """A tree run's snapshot (axor_wrap.agents.tree), under this node."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.post_tree(snapshot)
+
     async def post_reputation(self, snapshot_payload: dict) -> bool:
         """A node's axor-sentinel ``ReputationSnapshot`` (``snapshot_payload``).
         axor-wrap does not import axor-sentinel; the dict is the contract."""

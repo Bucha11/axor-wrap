@@ -151,6 +151,20 @@ class PlaneLink:
 
         return asyncio.run_coroutine_threadsafe(call(), loop).result(timeout)
 
+    def deliver(self, coro_fn: Callable[[], Any], timeout: float = 15.0) -> Any:
+        """Run an async callable on the link's loop and WAIT for it — for the
+        last things a caller sends before closing, which ``submit`` could
+        lose to the close. Returns its result; None if the link is down or it
+        failed (logged)."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return None
+        try:
+            return asyncio.run_coroutine_threadsafe(coro_fn(), loop).result(timeout)
+        except Exception as exc:  # noqa: BLE001 - best effort, said so
+            _log.warning("axor: Control-Plane delivery failed: %s", exc)
+            return None
+
     def submit(self, coro_fn: Callable[[], Any]) -> None:
         """Run an async callable on the link's loop, fire-and-forget."""
         loop = self._loop

@@ -130,8 +130,12 @@ class CliAgent(Invokable):
         report: Callable[[str], dict] | None = None,
         env: dict | None = None,
         context_store: str = "",
+        on_start: Callable[[str, str], None] | None = None,
     ) -> None:
         self.context_store = context_store
+        # (node_id, task) when a run of this node starts — how a tree learns
+        # which plane node each of its runs is, while they run
+        self.on_start = on_start
         self.agent, self.model = agent, model
         self.workspace, self.tree_run, self.role = workspace, tree_run, role
         self.read_only, self.command, self.timeout = read_only, command, timeout
@@ -166,6 +170,11 @@ class CliAgent(Invokable):
         package_parent = str(__import__("pathlib").Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = os.pathsep.join(
             p for p in (package_parent, env.get("PYTHONPATH", "")) if p)
+        if self.on_start is not None:
+            try:
+                self.on_start(envelope.node_id, envelope.task)
+            except Exception:  # noqa: BLE001 - a view, never the run
+                pass
         fd, last_file = tempfile.mkstemp(prefix="axor-last-", suffix=".txt")
         os.close(fd)
         try:
