@@ -35,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
         "manifest": _cmd_manifest,
         "config": _cmd_config,
         "connect-lab": _cmd_connect_lab,
+        "hook": _cmd_hook,
+        "agents": _cmd_agents,
     }[args.command]
     return handler(args)
 
@@ -64,7 +66,40 @@ def _build_parser() -> argparse.ArgumentParser:
     p_lab.add_argument("--runtime-label", "--model", dest="runtime_label", required=True)
     p_lab.add_argument("--agent-ref", default=None)
     p_lab.add_argument("--control-token", default=None)
+
+    # coding-agent CLIs (axor_wrap.agents)
+    p_hook = sub.add_parser("hook", help="hook command run by a coding-agent CLI (reads stdin)")
+    p_hook.add_argument("agent", choices=["claude-code", "codex"])
+    p_agents = sub.add_parser("agents", help="govern Claude Code / Codex through their hooks")
+    p_agents.add_argument("action", choices=["install", "uninstall"])
+    p_agents.add_argument("agent", choices=["claude-code", "codex"])
+    p_agents.add_argument("--project", type=Path, default=Path.cwd())
+    p_agents.add_argument("--user", action="store_true",
+                          help="the user-wide config instead of this project's")
     return parser
+
+
+def _cmd_hook(args: argparse.Namespace) -> int:
+    from axor_wrap.agents.client import hook_main
+
+    return hook_main(args.agent)
+
+
+def _cmd_agents(args: argparse.Namespace) -> int:
+    from axor_wrap.agents.install import agent_on_path, install, uninstall
+
+    if args.action == "uninstall":
+        path = uninstall(args.agent, args.project, user=args.user)
+        print(f"removed axor hooks from {path}" if path else "nothing installed")
+        return EXIT_OK
+    path = install(args.agent, args.project, user=args.user)
+    print(f"axor hooks written to {path}")
+    if args.agent == "codex":
+        print("Codex runs new hooks only after you review and trust them: run /hooks in codex.")
+    if not agent_on_path(args.agent):
+        print(f"note: {args.agent} is not on PATH here")
+    print("Control Plane: set AXOR_PLANE_URL (and AXOR_INGEST_KEY) in the agent's environment.")
+    return EXIT_OK
 
 
 def _scan_or_fail(path: Path) -> list[tuple[DetectedTool, EffectGuess]] | None:

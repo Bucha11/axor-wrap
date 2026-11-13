@@ -134,6 +134,31 @@ manifests = [harness_manifest(name, untrusted=True) for name in tools]
 governed = wrap_callables(tools, manifests, enforcement="off", node_id="scenario-7")
 ```
 
+## Coding-agent CLIs: Claude Code and Codex
+
+Both CLIs run a command before and after every tool call. Point it at axor:
+
+```bash
+axor-wrap agents install claude-code     # writes .claude/settings.json hooks
+axor-wrap agents install codex           # writes .codex/hooks.json; trust it with /hooks
+export AXOR_PLANE_URL=https://cp.example  # optional: each session becomes a plane node
+```
+
+Every hook goes to one sidecar per repository (started on first use, gone after
+30 idle minutes). It holds the kernel's per-call governor for each agent
+session and ONE taint ledger for every agent in the repository: a page Claude
+Code fetched is tainted when Codex later carries its content into a shell
+command, and the call is denied. Each session ships its trace — calls, results,
+denials with the gate that denied them, and its final answer as the run's claim
+— and obeys pause, stop and the call budget from the Control Plane.
+
+`AXOR_ENFORCE=0` governs and records without denying (the agent is told what
+would have been refused). An unreachable sidecar never means an ungoverned
+call: the call is judged alone; `AXOR_FAIL_CLOSED=1` denies instead if even that
+fails. An orchestrator running an agent as a node of a tree sets
+`AXOR_NODE_ID` / `AXOR_PARENT_NODE` / `AXOR_TREE_RUN` / `AXOR_ROLE` in its
+environment, and the node is named for it.
+
 ## What the scanner detects
 
 | Pattern | Framework tag |
