@@ -35,17 +35,7 @@ def workspace_root(cwd: str) -> str:
 
 
 def _ask(path: str, event: HookEvent, timeout: float) -> dict:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-        conn.settimeout(timeout)
-        conn.connect(path)
-        conn.sendall((json.dumps(event.to_wire()) + "\n").encode())
-        buf = b""
-        while not buf.endswith(b"\n"):
-            chunk = conn.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    return json.loads(buf)
+    return _request(path, event.to_wire(), timeout)
 
 
 def _start_sidecar(root: str, path: str) -> None:
@@ -63,6 +53,51 @@ def _start_sidecar(root: str, path: str) -> None:
             stdin=subprocess.DEVNULL, stdout=out, stderr=out,
             start_new_session=True, cwd=root, env=env,
         )
+
+
+def ensure_sidecar(root: str, wait: float = 5.0) -> bool:
+    """Start the workspace sidecar if none answers; True once one does."""
+    path = socket_path(root)
+    if _ping(path):
+        return True
+    _start_sidecar(root, path)
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        time.sleep(0.1)
+        if _ping(path):
+            return True
+    return False
+
+
+def _ping(path: str) -> bool:
+    try:
+        _request(path, {"op": "node_report", "node_id": ""}, 2.0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _request(path: str, message: dict, timeout: float) -> dict:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+        conn.settimeout(timeout)
+        conn.connect(path)
+        conn.sendall((json.dumps(message) + "\n").encode())
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    return json.loads(buf)
+
+
+def node_report(root: str, node_id: str) -> dict:
+    """What the sidecar saw a tree node do (see Sidecar.node_report). An
+    unreachable sidecar reports an unknown node."""
+    try:
+        return _request(socket_path(root), {"op": "node_report", "node_id": node_id}, 10.0)
+    except (OSError, ValueError):
+        return {"known": False, "calls": [], "sources": []}
 
 
 def decide(event: HookEvent, *, autostart: bool = True, timeout: float = 30.0) -> dict:

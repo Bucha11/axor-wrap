@@ -159,6 +159,34 @@ fails. An orchestrator running an agent as a node of a tree sets
 `AXOR_NODE_ID` / `AXOR_PARENT_NODE` / `AXOR_TREE_RUN` / `AXOR_ROLE` in its
 environment, and the node is named for it.
 
+### Trees of agents
+
+```yaml
+# axor.tree.yaml
+task: Add rate limiting to the auth module
+nodes:
+  plan:   {agent: claude-code, model: claude-fable-5-2, out: plan}
+  read:   {agent: codex, model: luna, count: 5, access: read,
+           shard: plan.questions, out: findings}
+  impl:   {agent: claude-code, model: claude-opus-5-5, after: [read]}
+```
+
+```bash
+axor-wrap tree check            # the stages it would run
+axor-wrap tree run              # run it in this repository
+```
+
+The tree runs as one governed axor-core session: its root issues the kernel's
+own `spawn_child` per stage (a parallel batch for `count`), each node is a
+declared child role on its CLI (`claude -p` / `codex exec`), so every child is
+gated like any spawn and the trace — and the Control Plane's topology — draws
+the tree from the spawns. A `read` node is started read-only and the sidecar
+refuses anything that is not a read. A `findings` node's answer is checked by
+the kernel against the files that node actually opened before the next stage
+sees it; the implementer is told which findings are verified. A node whose
+hooks never reported (ungoverned, as far as anyone can tell) hands on an
+untrusted answer, and the kernel will not let it drive the next spawn.
+
 ## What the scanner detects
 
 | Pattern | Framework tag |

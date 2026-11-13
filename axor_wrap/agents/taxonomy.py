@@ -70,3 +70,69 @@ def canonical(agent: str, tool: str, args: dict) -> tuple[str, dict]:
     if low in ("todowrite", "update_plan"):
         return "todo", {}
     return low, dict(args)
+
+
+# ── read-only nodes ───────────────────────────────────────────────────────────
+# A reader in a tree may look, never change. Its CLI is started read-only where
+# the CLI can be (codex --sandbox read-only, claude --disallowedTools), and the
+# hook holds the line as well: a write tool is refused, and a shell command
+# runs only if every command in it is one that reads.
+_READ_COMMANDS = frozenset({
+    "cat", "head", "tail", "less", "more", "nl", "wc", "rg", "grep", "egrep", "fgrep",
+    "ag", "ls", "tree", "find", "fd", "file", "stat", "pwd", "echo", "printf", "jq",
+    "sort", "uniq", "cut", "tr", "diff", "basename", "dirname", "realpath",
+    "which", "sed", "true", "test", "[", "cd", "bat", "python3", "python",
+})
+_GIT_READ = frozenset({"log", "diff", "show", "status", "grep", "blame", "ls-files",
+                       "rev-parse", "branch", "tag", "describe", "shortlog"})
+_FIND_WRITES = frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint",
+                          "-fprintf", "-fls"})
+
+
+def read_only_command(command: str) -> bool:
+    """Whether every command in a shell line only reads. Redirections into a
+    file, ``sed -i``, ``find -delete``/``-exec`` and any command not known to
+    read are refused; anything unparseable is refused."""
+    import shlex
+
+    if re.search(r"(^|[^<>&0-9])>{1,2}(?!&)", command.replace("2>&1", "").replace(">/dev/null", "")):
+        return False
+    if "$(" in command or "`" in command:
+        return False
+    for chunk in re.split(r"&&|\|\||;|\||\n", command):
+        try:
+            words = shlex.split(chunk)
+        except ValueError:
+            return False
+        if not words:
+            continue
+        head = words[0].rsplit("/", 1)[-1]
+        if head == "git":
+            sub = next((w for w in words[1:] if not w.startswith("-")), "")
+            if sub not in _GIT_READ:
+                return False
+            continue
+        if head not in _READ_COMMANDS:
+            return False
+        if head == "sed" and any(w.startswith("-i") or w == "--in-place" for w in words[1:]):
+            return False
+        if head == "find" and any(w in _FIND_WRITES for w in words[1:]):
+            return False
+        if head == "sort" and any(w == "-o" or w.startswith(("-o", "--output")) for w in words[1:]):
+            return False
+        if head == "uniq" and len([w for w in words[1:] if not w.startswith("-")]) > 1:
+            return False  # uniq IN OUT writes OUT
+        if head in ("python", "python3") and not (len(words) >= 2 and words[1] in ("-V", "--version")):
+            return False
+    return True
+
+
+def read_only_refusal(tool: str, args: dict) -> str | None:
+    """Why a canonical call is not allowed on a read-only node, or None."""
+    if tool in ("write", "delegate"):
+        return f"this node is read-only ({tool} is not reading)"
+    if tool == "bash" and not read_only_command(str(args.get("command", ""))):
+        return "this node is read-only, and this shell command is not known to only read"
+    if tool == "mcp_tool":
+        return "this node is read-only, and an MCP tool may change things"
+    return None

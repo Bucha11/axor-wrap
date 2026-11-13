@@ -47,6 +47,7 @@ class HookEvent:
     parent_node: str = ""
     tree_run: str = ""
     role: str = ""
+    access: str = ""            # "read" = a read-only node of a tree
 
     def to_wire(self) -> dict:
         return dict(self.__dict__)
@@ -60,7 +61,8 @@ class HookEvent:
 def parse_event(agent: str, raw: str | dict, env: dict | None = None) -> HookEvent:
     """One hook invocation's stdin as a :class:`HookEvent`. ``env`` is the
     hook's environment: an orchestrator running this agent as a tree node says
-    so there (AXOR_NODE_ID, AXOR_PARENT_NODE, AXOR_TREE_RUN, AXOR_ROLE)."""
+    so there (AXOR_NODE_ID, AXOR_PARENT_NODE, AXOR_TREE_RUN, AXOR_ROLE,
+    AXOR_ACCESS)."""
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r} (one of {', '.join(AGENTS)})")
     data = json.loads(raw) if isinstance(raw, str) else dict(raw)
@@ -84,6 +86,7 @@ def parse_event(agent: str, raw: str | dict, env: dict | None = None) -> HookEve
         parent_node=env.get("AXOR_PARENT_NODE", ""),
         tree_run=env.get("AXOR_TREE_RUN", ""),
         role=env.get("AXOR_ROLE", ""),
+        access=env.get("AXOR_ACCESS", ""),
     )
 
 

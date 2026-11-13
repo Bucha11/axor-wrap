@@ -103,6 +103,10 @@ class _Session:
     link: Any = None
     pending: dict = field(default_factory=dict)   # tool_use_id → (decision, record)
     calls: int = 0
+    # what actually ran, in the kernel's vocabulary (for a tree's findings
+    # check), and the untrusted sources its results came from
+    executed: list = field(default_factory=list)
+    sources: set = field(default_factory=set)
     last_seen: float = field(default_factory=time.time)
 
 
@@ -129,6 +133,7 @@ class Sidecar:
         # ONE ledger for every agent in the workspace
         self.taint = TaintEngine()
         self.sessions: dict[str, _Session] = {}
+        self.by_node: dict[str, _Session] = {}
         self.last_event = time.time()
         self._lock = threading.Lock()
 
@@ -170,6 +175,7 @@ class Sidecar:
                            RunRecorder(node_id))
         session.link = self._open_link(node_id)
         self.sessions[key] = session
+        self.by_node[node_id] = session
         return session
 
     def _open_link(self, node_id: str) -> Any:
@@ -235,6 +241,10 @@ class Sidecar:
                                   f"the call budget set from the Control Plane ({cap}) "
                                   "is spent", "budget")
         tool, args = taxonomy.canonical(event.agent, event.tool, event.tool_input)
+        if event.access == "read":
+            refusal = taxonomy.read_only_refusal(tool, args)
+            if refusal is not None:
+                return self._deny(session, event, refusal, "capability")
         decision = session.governor.evaluate(tool, args)
         if not decision.allowed:
             from axor_core.governor import gate_of
@@ -252,7 +262,7 @@ class Sidecar:
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)
         record.started = True
         session.pending[event.tool_use_id or f"{event.tool}:{len(session.pending)}"] = (
-            decision, record)
+            decision, record, tool, args)
         self._ship(session)
         return {"allow": True, "note": note}
 
@@ -260,16 +270,19 @@ class Sidecar:
         key = event.tool_use_id
         if key not in session.pending:
             # an agent that sends no tool_use_id: the oldest open call of this tool
-            key = next((k for k, (_, r) in session.pending.items() if r.tool == event.tool),
-                       None)
+            key = next((k for k, entry in session.pending.items()
+                        if entry[1].tool == event.tool), None)
         if key is None:
             return {"allow": True}
-        decision, record = session.pending.pop(key)
+        decision, record, tool, args = session.pending.pop(key)
         output = _text(event.tool_response)
         status = "error" if isinstance(event.tool_response, dict) and (
             event.tool_response.get("is_error") or event.tool_response.get("error")) else "ok"
         if status == "ok":
             session.governor.register_output(decision, output)
+            session.executed.append((tool, args))
+            if tool in taxonomy.UNTRUSTED_SOURCES:
+                session.sources.add("mcp" if tool == "mcp_tool" else "web")
         session.recorder.end_tool(record, output, status=status)
         self._ship(session)
         return {"allow": True}
@@ -307,6 +320,17 @@ class Sidecar:
         session.pending.clear()
         session.recorder.reset()
 
+    def node_report(self, node_id: str) -> dict:
+        """What one node did, for the orchestrator that spawned it: the calls
+        that ran (to check its findings) and the untrusted sources it read (to
+        taint what it returns)."""
+        with self._lock:
+            session = self.by_node.get(node_id)
+            if session is None:
+                return {"known": False, "calls": [], "sources": []}
+            return {"known": True, "calls": [list(c) for c in session.executed],
+                    "sources": sorted(session.sources)}
+
     def close(self) -> None:
         for session in list(self.sessions.values()):
             if session.link is not None:
@@ -323,9 +347,11 @@ async def serve(root: str, path: str, *, idle: float | None = None) -> None:
 
     async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            line = await reader.readline()
-            event = HookEvent.from_wire(json.loads(line))
-            answer = await asyncio.to_thread(sidecar.handle, event)
+            message = json.loads(await reader.readline())
+            if message.get("op") == "node_report":
+                answer = sidecar.node_report(str(message.get("node_id", "")))
+            else:
+                answer = await asyncio.to_thread(sidecar.handle, HookEvent.from_wire(message))
         except Exception as exc:  # noqa: BLE001 - answer, never hang the agent
             _log.exception("axor sidecar: event failed")
             answer = {"allow": True, "error": f"{type(exc).__name__}: {exc}"}

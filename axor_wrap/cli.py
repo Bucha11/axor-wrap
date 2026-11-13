@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         "connect-lab": _cmd_connect_lab,
         "hook": _cmd_hook,
         "agents": _cmd_agents,
+        "tree": _cmd_tree,
     }[args.command]
     return handler(args)
 
@@ -76,6 +77,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_agents.add_argument("--project", type=Path, default=Path.cwd())
     p_agents.add_argument("--user", action="store_true",
                           help="the user-wide config instead of this project's")
+    p_tree = sub.add_parser("tree", help="run a tree of coding agents (axor.tree.yaml)")
+    p_tree.add_argument("action", choices=["run", "check"])
+    p_tree.add_argument("spec", type=Path, nargs="?", default=Path("axor.tree.yaml"))
+    p_tree.add_argument("--workspace", type=Path, default=Path.cwd())
     return parser
 
 
@@ -99,6 +104,37 @@ def _cmd_agents(args: argparse.Namespace) -> int:
     if not agent_on_path(args.agent):
         print(f"note: {args.agent} is not on PATH here")
     print("Control Plane: set AXOR_PLANE_URL (and AXOR_INGEST_KEY) in the agent's environment.")
+    return EXIT_OK
+
+
+def _cmd_tree(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from axor_wrap.agents.tree import TreeSpecError, load_tree, run_tree
+
+    try:
+        spec = load_tree(args.spec)
+    except (OSError, TreeSpecError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_EMPTY
+    stages = [", ".join(f"{n.name} ({n.agent}{'/' + n.model if n.model else ''}"
+                        f"{' ×' + str(n.count) if n.count > 1 else ''}"
+                        f"{', read-only' if n.access == 'read' else ''})" for n in stage)
+              for stage in spec.stages()]
+    for i, line in enumerate(stages, 1):
+        print(f"stage {i}: {line}")
+    if args.action == "check":
+        return EXIT_OK
+    import os
+
+    run = asyncio.run(run_tree(spec, str(args.workspace),
+                               plane_url=os.environ.get("AXOR_PLANE_URL") or None))
+    print(json.dumps(run.report, indent=2, ensure_ascii=False))
+    failed = [n for n, outs in run.report["nodes"].items()
+              if any(o.get("status") != "ok" for o in outs)]
+    if failed:
+        print(f"not every node completed: {', '.join(failed)}", file=sys.stderr)
+        return EXIT_EMPTY
     return EXIT_OK
 
 
