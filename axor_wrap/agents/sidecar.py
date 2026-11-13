@@ -68,6 +68,30 @@ def _text(value: Any) -> str:
         return str(value)
 
 
+def developer_id(root: str) -> str:
+    """Who runs these agents, as an opaque id: the plane counts developers (a
+    coding session is not a governed node) and must never be handed an
+    address. ``AXOR_DEVELOPER`` if set, else the repository's git user.email,
+    else user@host — hashed either way."""
+    import getpass
+    import subprocess
+
+    who = os.environ.get("AXOR_DEVELOPER", "")
+    if not who:
+        try:
+            out = subprocess.run(["git", "config", "user.email"], cwd=root or None,
+                                 capture_output=True, text=True, timeout=2)
+            who = out.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            who = ""
+    if not who:
+        try:
+            who = f"{getpass.getuser()}@{socket.gethostname()}"
+        except Exception:  # noqa: BLE001
+            who = socket.gethostname()
+    return "dev-" + hashlib.sha256(who.strip().lower().encode()).hexdigest()[:16]
+
+
 def _mcp_text(value: Any) -> str:
     """The text of an MCP tool's answer, whatever envelope the CLI reports it
     in: a string, a list of content blocks, or ``{"content": [...]}``."""
@@ -156,6 +180,7 @@ class Sidecar:
         self._link_factory = link_factory
         # ONE ledger for every agent in the workspace
         self.taint = TaintEngine()
+        self.developer = developer_id(root)
         self.sessions: dict[str, _Session] = {}
         self.by_node: dict[str, _Session] = {}
         self.last_event = time.time()
@@ -198,6 +223,9 @@ class Sidecar:
         session = _Session(event.agent, event.session_id, node_id, governor,
                            RunRecorder(node_id))
         session.link = self._open_link(node_id)
+        if session.link is not None and self._link_factory is None:
+            link, agent, dev = session.link, event.agent, self.developer
+            link.submit(lambda: link.connector.post_profile("coding", agent, dev))
         self.sessions[key] = session
         self.by_node[node_id] = session
         return session

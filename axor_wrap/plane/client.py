@@ -193,6 +193,22 @@ class PlaneClient:
             response.raise_for_status()
             return response.json()
 
+    async def post_profile(self, kind: str, agent: str = "", developer: str = "") -> bool:
+        """Say what this node is — ``agent`` (production), ``coding`` (a coding
+        agent session) or ``tree`` (a tree run) — once. The plane meters coding
+        sessions by developer instead of counting them as governed nodes."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    f"{self._base}/v1/plane/{self.session.node_id}/profile",
+                    json={"kind": kind, "agent": agent, "developer": developer},
+                    headers=self._auth(),
+                )
+        except httpx.HTTPError:
+            return False
+        return response.status_code < 300
+
     async def post_tree(self, snapshot: dict) -> bool:
         """POST a tree run's snapshot to ``/v1/trees/{tree_run}`` — this node
         IS the tree run. Replaced on the plane each time. Best-effort: False

@@ -453,6 +453,9 @@ async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
             from axor_wrap.plane.link import PlaneLink
 
             plane = owned = PlaneLink(plane_url, tree_run)
+            # a tree run is not a governed node: its children are the sessions
+            # the plane meters (by developer)
+            plane.submit(lambda: plane.connector.post_profile("tree"))
         except Exception:  # noqa: BLE001 - the tree runs without a plane
             plane = None
     root_policy = dataclasses.replace(presets.get("federated"), name="tree:root",

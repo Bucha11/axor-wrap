@@ -242,3 +242,15 @@ def test_hook_processes_share_one_sidecar(tmp_path) -> None:
     finally:
         subprocess.run(["pkill", "-f", "--", f"--socket {sock}"], check=False)
         time.sleep(0.2)
+
+
+def test_the_developer_is_an_opaque_id(monkeypatch, tmp_path) -> None:
+    from axor_wrap.agents.sidecar import developer_id
+
+    monkeypatch.setenv("AXOR_DEVELOPER", "Ada@Example.com")
+    a = developer_id(str(tmp_path))
+    monkeypatch.setenv("AXOR_DEVELOPER", "ada@example.com ")
+    assert developer_id(str(tmp_path)) == a          # one person, one id
+    assert a.startswith("dev-") and "@" not in a and "example" not in a
+    monkeypatch.setenv("AXOR_DEVELOPER", "bob@example.com")
+    assert developer_id(str(tmp_path)) != a
