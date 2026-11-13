@@ -65,6 +65,7 @@ class NodeSpec:
     shard: str = ""                # "<plan node>.questions"
     timeout: float = 1800.0
     command: list[str] | None = None
+    context_tokens: int = 8000     # how much of its ancestors' output is pushed
 
 
 @dataclass
@@ -119,6 +120,7 @@ def parse_tree(data: dict) -> TreeSpec:
             out=str(raw.get("out", "text")), after=after, prompt=str(raw.get("prompt", "")),
             shard=str(raw.get("shard", "")), timeout=float(raw.get("timeout", 1800)),
             command=list(raw["command"]) if raw.get("command") else None,
+            context_tokens=int(raw.get("context_tokens", 8000)),
         )
         _check(node, [n.name for n in nodes], nodes)
         nodes.append(node)
@@ -136,6 +138,8 @@ def _check(node: NodeSpec, earlier: list[str], nodes: list[NodeSpec]) -> None:
     if node.agent not in AGENTS and not node.command:
         raise TreeSpecError(f"node {node.name!r}: agent must be one of {', '.join(AGENTS)} "
                             "(or give a command)")
+    if node.context_tokens < 0:
+        raise TreeSpecError(f"node {node.name!r}: context_tokens cannot be negative")
     if not 1 <= node.count <= MAX_COUNT:
         raise TreeSpecError(f"node {node.name!r}: count must be 1..{MAX_COUNT}")
     if node.access not in ("read", "write"):
@@ -175,37 +179,6 @@ def load_tree(path: str | Path) -> TreeSpec:
 
 # ── what each node is told ────────────────────────────────────────────────────
 
-def _json_object(text: str) -> dict | None:
-    decoder = json.JSONDecoder()
-    found = None
-    pos = text.find("{")
-    while pos != -1:
-        try:
-            data, end = decoder.raw_decode(text, pos)
-        except ValueError:
-            pos = text.find("{", pos + 1)
-            continue
-        if isinstance(data, dict):
-            found = data
-        pos = text.find("{", end)
-    return found
-
-
-def merge_findings(answers: list[str]) -> list[dict]:
-    """The readers' checked findings, one list: duplicates (same file, line and
-    claim) folded, verified first."""
-    merged: dict[tuple, dict] = {}
-    for answer in answers:
-        data = _json_object(answer) or {}
-        for f in data.get("findings", []):
-            if not isinstance(f, dict):
-                continue
-            key = (f.get("file"), f.get("line"), str(f.get("claim", "")).strip().lower())
-            if key not in merged or (f.get("verified") and not merged[key].get("verified")):
-                merged[key] = f
-    return sorted(merged.values(), key=lambda f: (not f.get("verified"), str(f.get("file"))))
-
-
 _PLAN_ASK = (
     "You are the planner. Do not change any file. Answer with one JSON object: "
     '{"steps": ["…"], "questions": ["…"]} — steps to implement the task, and '
@@ -218,65 +191,57 @@ _FINDINGS_ASK = (
     "naming a file you did not open is marked unverified.")
 
 
-class Upstream:
-    """What finished nodes produced, kept for the nodes after them."""
-
-    def __init__(self) -> None:
-        self.outputs: dict[str, list[dict]] = {}
-
-    def answers(self, name: str) -> list[str]:
-        return [o["output"] for o in self.outputs.get(name, []) if o.get("status") == "ok"]
-
-    def plan(self, name: str) -> dict:
-        for answer in self.answers(name):
-            data = _json_object(answer)
-            if data is not None:
-                return data
-        return {}
-
-
-def node_prompt(spec: TreeSpec, node: NodeSpec, index: int, upstream: Upstream) -> str:
+def node_prompt(spec: TreeSpec, node: NodeSpec, index: int, store: Any,
+                failures: dict | None = None) -> tuple[str, dict]:
+    """(prompt, flow) for one run of ``node``: its task, the context its
+    ancestors left — ranked for its part, within its budget, untrusted withheld
+    — and what it must answer with. ``flow`` says what was pushed, pointed to
+    and withheld, and the answers the pushed items were cut from."""
+    ancestors = spec.ancestors(node.name)
+    mine: list[str] = []
+    if node.shard:
+        questions = store.questions(node.shard.partition(".")[0])
+        mine = questions[index::node.count]
+    plan_text = " ".join(i.text for i in store.items.values()
+                         if i.kind == "plan" and i.node in ancestors)
+    flow = store.compose(ancestors, " ".join([node.prompt, *mine, plan_text]),
+                         node.context_tokens)
     parts = [f"Task: {spec.task}"]
-    for name in spec.ancestors(node.name):
-        a = spec.node(name)
-        if a.out == "plan":
-            plan = upstream.plan(name)
-            if plan.get("steps"):
-                parts.append("Plan:\n" + "\n".join(f"{i + 1}. {s}" for i, s in
-                                                   enumerate(plan["steps"])))
-        elif a.out == "findings":
-            found = merge_findings(upstream.answers(name))
-            if found:
-                lines = []
-                for f in found:
-                    where = f"{f.get('file', '?')}:{f.get('line', '?')}"
-                    mark = "verified" if f.get("verified") else \
-                        f"UNVERIFIED — {f.get('why', 'not backed by a read')}"
-                    lines.append(f"- [{mark}] {where} {f.get('claim', '')}")
-                parts.append(f"Findings from {name} (verified = the reader opened that "
-                             "file; do not rely on unverified ones without checking):\n"
-                             + "\n".join(lines))
-        else:
-            answers = upstream.answers(name)
-            if answers:
-                parts.append(f"From {name}:\n" + "\n\n".join(answers))
-        failed = [o for o in upstream.outputs.get(name, []) if o.get("status") != "ok"]
+    pushed = flow["pushed"]
+    plans = [i for i in pushed if i.kind == "plan"]
+    findings = [i for i in pushed if i.kind == "finding"]
+    texts = [i for i in pushed if i.kind == "text"]
+    for item in plans:
+        parts.append(f"Plan ({item.ref}):\n{item.text}")
+    if findings:
+        parts.append("Findings (verified = the reader opened that file; check an "
+                     "unverified one before relying on it):\n"
+                     + "\n".join(f"- {i.ref} {i.headline()}" for i in findings))
+    for item in texts:
+        parts.append(f"From {item.ref}:\n{item.text}")
+    if flow["pointers"]:
+        parts.append("More from earlier nodes, by ref — pull what you need with the "
+                     "axor_context tool (get(ref), search(query)):\n"
+                     + "\n".join(i.pointer() for i in flow["pointers"]))
+    if flow["withheld"]:
+        parts.append("Withheld — these came from a node that read untrusted content "
+                     "(the web, or a run nobody could govern). Pull one only if you must; "
+                     "it is marked untrusted in your session: "
+                     + ", ".join(i.ref for i in flow["withheld"]))
+    for name in ancestors:
+        failed = (failures or {}).get(name)
         if failed:
             parts.append(f"Note: {len(failed)} run(s) of {name} did not complete "
-                         f"({failed[0].get('reason', 'failed')}).")
-    if node.shard:
-        source = node.shard.partition(".")[0]
-        questions = [q for q in upstream.plan(source).get("questions", []) if isinstance(q, str)]
-        mine = questions[index::node.count] if questions else []
-        if mine:
-            parts.append("Your questions:\n" + "\n".join(f"- {q}" for q in mine))
+                         f"({failed[0]}).")
+    if mine:
+        parts.append("Your questions:\n" + "\n".join(f"- {q}" for q in mine))
     if node.prompt:
         parts.append(node.prompt)
     if node.out == "plan":
         parts.append(_PLAN_ASK)
     elif node.out == "findings":
         parts.append(_FINDINGS_ASK)
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), flow
 
 
 # ── the root: issues the spawns ───────────────────────────────────────────────
@@ -291,34 +256,60 @@ class _Bus:
 
 class TreeExecutor(Invokable):
     """The tree's root node. Deterministic: it decides nothing a model would —
-    it issues each stage's spawns and passes results on."""
+    it issues each stage's spawns and passes results on, through the store."""
 
-    def __init__(self, spec: TreeSpec) -> None:
+    def __init__(self, spec: TreeSpec, store: Any, plane: Any = None) -> None:
         self.spec = spec
-        self.upstream = Upstream()
+        self.store = store
+        self.plane = plane
+        self.outputs: dict[str, list[dict]] = {}
+        self.flow: dict[str, dict] = {}
+        self.excised: list[str] = []
         self._bus = _Bus()
 
     def get_bus(self) -> _Bus:
         return self._bus
 
+    def _failures(self) -> dict[str, list[str]]:
+        return {name: [o.get("reason", "failed") for o in outs if o.get("status") != "ok"]
+                for name, outs in self.outputs.items()}
+
+    def _take_excision(self) -> None:
+        """An operator's cut from the Control Plane, applied before the next
+        stage is told anything."""
+        take = getattr(self.plane, "take_excision", None)
+        if take is None:
+            return
+        directive = take(self.store.provenance_map())
+        if directive is not None:
+            self.excised += self.store.excise(list(directive.target_refs))
+
     async def stream(self, envelope: Any) -> AsyncIterator[ExecutorEvent]:
         for k, stage in enumerate(self.spec.stages()):
+            self._take_excision()
             asked: list[tuple[NodeSpec, int]] = []
             children: list[dict] = []
             for node in stage:
                 for i in range(node.count):
+                    prompt, flow = node_prompt(self.spec, node, i, self.store,
+                                               self._failures())
+                    self.flow[f"{node.name}#{i}"] = {
+                        "pushed": [x.ref for x in flow["pushed"]],
+                        "pointers": [x.ref for x in flow["pointers"]],
+                        "withheld": [x.ref for x in flow["withheld"]],
+                        "tokens": flow["tokens"],
+                    }
                     asked.append((node, i))
                     children.append({
-                        "task": node_prompt(self.spec, node, i, self.upstream),
+                        "task": prompt,
                         "role": node.name,
                         # The task is REWRITTEN from what came before (a plan
-                        # parsed, findings merged), and a rewrite is not
-                        # substring-faithful: the per-value ledger would lose
-                        # the provenance. The answers it was built from ride
-                        # along verbatim, so the spawn gate judges the task by
-                        # what it was made of.
-                        "derived_from": [a for name in self.spec.ancestors(node.name)
-                                         for a in self.upstream.answers(name)],
+                        # parsed, findings ranked and cut), and a rewrite is not
+                        # substring-faithful: the per-value ledger would lose the
+                        # provenance. The answers its pushed items were cut from
+                        # ride along verbatim, so the spawn gate judges the task
+                        # by what it was made of.
+                        "derived_from": flow["derived_from"],
                     })
             tid = f"stage-{k}"
             args = children[0] if len(children) == 1 else {"children": children}
@@ -327,7 +318,9 @@ class TreeExecutor(Invokable):
                                          "tool_use_id": tid},
                                 node_id=envelope.node_id)
             for (node, i), outcome in zip(asked, self._outcomes(tid, len(children))):
-                self.upstream.outputs.setdefault(node.name, []).append({"index": i, **outcome})
+                self.outputs.setdefault(node.name, []).append({"index": i, **outcome})
+                if outcome.get("status") == "ok":
+                    self.store.add_answer(node.name, i, node.out, outcome["output"])
         yield ExecutorEvent(kind=ExecutorEventKind.TEXT,
                             payload={"text": json.dumps(self.report())},
                             node_id=envelope.node_id)
@@ -346,12 +339,12 @@ class TreeExecutor(Invokable):
                                         "[child spawn failed"))
             return [{"status": "failed", "reason": result} if failed
                     else {"status": "ok", "output": result}]
-        # a denial dict, or nothing came back
         reason = (result or {}).get("reason") if isinstance(result, dict) else None
         return [{"status": "denied", "reason": reason or str(result)}] * n
 
     def report(self) -> dict:
-        return {"task": self.spec.task, "nodes": self.upstream.outputs}
+        return {"task": self.spec.task, "nodes": self.outputs, "flow": self.flow,
+                "excised": self.excised}
 
 
 # ── running one ───────────────────────────────────────────────────────────────
@@ -362,6 +355,7 @@ class TreeRun:
     report: dict
     spawned: list[dict]
     session: Any = None
+    store: Any = None
 
 
 async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
@@ -423,7 +417,20 @@ async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
         )
         for node in spec.nodes
     ]
-    executor = TreeExecutor(spec)
+    from axor_wrap.agents.context import ContextStore
+    from axor_wrap.agents.sidecar import socket_path
+
+    store_path = str(Path(socket_path(root_dir)).parent / f"{tree_run}.context.json")
+    ledger: dict = {}
+
+    def provenance(text: str) -> tuple[bool, list[str]]:
+        root = ledger["session"].provenance_of(text)
+        return root.is_tainted, sorted(s.value for s in root.sources)
+
+    store = ContextStore(store_path, provenance)
+    for role in roles:
+        role.executor.context_store = store_path
+    executor = TreeExecutor(spec, store, plane)
     session = GovernedSession(
         executor=executor,
         capability_executor=CapabilityExecutor(),
@@ -435,6 +442,7 @@ async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
         federation_gateway=FederationGateway(peers={}, compatible_kernels=set(),
                                              federated_domains=set()),
     )
+    ledger["session"] = session
     await session.run(spec.task, policy=root_policy)
     # the root is the tree run on the plane; its children are named by the
     # kernel's node ids, the same ids their hooks report under
@@ -445,7 +453,8 @@ async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
         for t in session.all_traces() for e in t.events if isinstance(e, ChildSpawnedEvent)
     ]
     run = TreeRun(tree_run, executor.report(), spawned, session)
-    if plane is not None:
+    run.store = store
+    if plane is not None and hasattr(plane, "submit"):
         lines = [{"kind": "node_spawned",
                   "payload": {**s, "edge_kind": "delegation", "tree_run": tree_run}}
                  for s in spawned]

@@ -16,7 +16,9 @@ import re
 UNTRUSTED_SOURCES = frozenset({"web_fetch", "web_search", "mcp_tool"})
 EGRESS_SINKS = frozenset({"web_fetch"})
 IMPERATIVE_SINKS = frozenset({"delegate"})
-BENIGN_TOOLS = frozenset({"read", "glob", "grep", "todo"})
+BENIGN_TOOLS = frozenset({"read", "glob", "grep", "todo", "axor_context"})
+# the tree's own context server: a read, whose provenance its answer states
+CONTEXT_SERVER = "axor_context"
 DRIVING_ARGS = {"web_fetch": ["url"], "delegate": ["prompt"]}
 
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULTILINE)
@@ -36,6 +38,8 @@ def canonical(agent: str, tool: str, args: dict) -> tuple[str, dict]:
     args = args or {}
     name = tool.strip()
     low = name.lower()
+    if low.startswith(f"mcp__{CONTEXT_SERVER}__"):
+        return CONTEXT_SERVER, dict(args)
     if low.startswith("mcp__"):
         return "mcp_tool", dict(args)
     if low in ("bash", "shell", "exec_command", "local_shell", "unified_exec"):

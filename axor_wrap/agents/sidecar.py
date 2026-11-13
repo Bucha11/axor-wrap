@@ -68,6 +68,30 @@ def _text(value: Any) -> str:
         return str(value)
 
 
+def _mcp_text(value: Any) -> str:
+    """The text of an MCP tool's answer, whatever envelope the CLI reports it
+    in: a string, a list of content blocks, or ``{"content": [...]}``."""
+    if isinstance(value, dict) and isinstance(value.get("content"), list):
+        value = value["content"]
+    if isinstance(value, list):
+        return "".join(b.get("text", "") for b in value if isinstance(b, dict))
+    return value if isinstance(value, str) else _text(value)
+
+
+def context_provenance(response: Any) -> tuple[bool, list[str]]:
+    """(untrusted, sources) an ``axor_context`` answer declares for itself —
+    read from the TOP-LEVEL object the server wrote, never from item text
+    nested inside it (an item cannot vouch for itself). Unreadable = untrusted."""
+    try:
+        body = json.loads(_mcp_text(response))
+    except (ValueError, TypeError):
+        return True, ["unknown_external"]
+    prov = body.get("provenance") if isinstance(body, dict) else None
+    if not isinstance(prov, dict):
+        return True, ["unknown_external"]
+    return bool(prov.get("untrusted")), [str(x) for x in prov.get("sources") or []]
+
+
 def last_assistant_text(transcript_path: str) -> str:
     """The final assistant message in a Claude Code transcript (JSONL), for a
     Stop event that does not carry it."""
@@ -278,7 +302,24 @@ class Sidecar:
         output = _text(event.tool_response)
         status = "error" if isinstance(event.tool_response, dict) and (
             event.tool_response.get("is_error") or event.tool_response.get("error")) else "ok"
-        if status == "ok":
+        if status == "ok" and tool == taxonomy.CONTEXT_SERVER:
+            untrusted, sources = context_provenance(event.tool_response)
+            if untrusted:
+                # pulled context that came from an untrusted node: the puller
+                # has now read untrusted content, by its own act
+                from axor_core.contracts.taint import TaintSource
+                from axor_core.taint.causal_root import CausalRoot
+
+                names = {"web": TaintSource.WEB, "mcp": TaintSource.MCP}
+                roots = frozenset(names.get(x, TaintSource.CHILD_AGENT) for x in sources) \
+                    or frozenset({TaintSource.CHILD_AGENT})
+                self.taint.register_value(output, CausalRoot(sources=roots))
+                session.sources.update(x if x in names else "child_agent"
+                                       for x in (sources or ["child_agent"]))
+            else:
+                session.governor.register_output(decision, output)
+            session.executed.append((tool, args))
+        elif status == "ok":
             session.governor.register_output(decision, output)
             session.executed.append((tool, args))
             if tool in taxonomy.UNTRUSTED_SOURCES:

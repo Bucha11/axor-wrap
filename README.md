@@ -187,6 +187,20 @@ sees it; the implementer is told which findings are verified. A node whose
 hooks never reported (ungoverned, as far as anyone can tell) hands on an
 untrusted answer, and the kernel will not let it drive the next spawn.
 
+**Context flow.** A node is not handed everything its ancestors said. Each
+answer is cut into items (the plan, each finding, each text answer) with a ref
+(`read#2/f3`) and its provenance as the tree's ledger sees it. A node gets what
+is relevant to its own part first — verified findings before unverified,
+duplicates folded — within `context_tokens` (default 8000); the rest is listed
+as one-line pointers it can pull through the `axor_context` MCP server
+(`search`, `get`), which every node is started with. An item from a node that
+read untrusted content is never pushed — not its text, not a plan's questions —
+only listed by ref; pulling it is a tool call the sidecar records as an
+untrusted read in the puller's session. An operator can cut an item, or a whole
+answer, from the Control Plane before the next stage (`excision` on the tree's
+node): it is gone from push and pull. The run's report says, per node, what was
+pushed, pointed to, withheld and cut.
+
 ## What the scanner detects
 
 | Pattern | Framework tag |

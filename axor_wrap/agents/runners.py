@@ -42,9 +42,16 @@ def _claude_hooks() -> str:
     return json.dumps({"hooks": hooks})
 
 
+def _context_server(store: str) -> tuple[str, list[str]]:
+    import sys
+
+    return sys.executable, ["-m", "axor_wrap.agents.context_mcp", store]
+
+
 def default_argv(agent: str, model: str, prompt: str, *, read_only: bool,
                  last_message_file: str = "",
-                 permission_mode: str = "bypassPermissions") -> list[str]:
+                 permission_mode: str = "bypassPermissions",
+                 context_store: str = "") -> list[str]:
     """The non-interactive command line for an agent. Approval prompts cannot
     be answered in a tree, so the CLI's own prompts are off; the axor hooks are
     the gate (Claude Code runs PreToolUse hooks in every permission mode)."""
@@ -55,6 +62,10 @@ def default_argv(agent: str, model: str, prompt: str, *, read_only: bool,
             argv += ["--model", model]
         if read_only:
             argv += ["--disallowedTools", _READ_ONLY_CLAUDE_TOOLS]
+        if context_store:
+            command, args = _context_server(context_store)
+            argv += ["--mcp-config", json.dumps({"mcpServers": {
+                "axor_context": {"command": command, "args": args}}})]
         return argv
     if agent == "codex":
         argv = ["codex", "exec", "--json", "--skip-git-repo-check",
@@ -63,6 +74,10 @@ def default_argv(agent: str, model: str, prompt: str, *, read_only: bool,
             argv += ["-m", model]
         if last_message_file:
             argv += ["--output-last-message", last_message_file]
+        if context_store:
+            command, args = _context_server(context_store)
+            argv += ["-c", f"mcp_servers.axor_context.command={json.dumps(command)}",
+                     "-c", f"mcp_servers.axor_context.args={json.dumps(args)}"]
         return argv + [prompt]
     raise ValueError(f"no default command for agent {agent!r}; give the node a command")
 
@@ -114,7 +129,9 @@ class CliAgent(Invokable):
         timeout: float = 1800.0,
         report: Callable[[str], dict] | None = None,
         env: dict | None = None,
+        context_store: str = "",
     ) -> None:
+        self.context_store = context_store
         self.agent, self.model = agent, model
         self.workspace, self.tree_run, self.role = workspace, tree_run, role
         self.read_only, self.command, self.timeout = read_only, command, timeout
@@ -131,7 +148,8 @@ class CliAgent(Invokable):
             return [part.replace("{prompt}", prompt).replace("{model}", self.model)
                     for part in self.command]
         return default_argv(self.agent, self.model, prompt, read_only=self.read_only,
-                            last_message_file=last_message_file)
+                            last_message_file=last_message_file,
+                            context_store=self.context_store)
 
     async def stream(self, envelope: Any) -> AsyncIterator[ExecutorEvent]:
         lineage = getattr(envelope, "lineage", None)
@@ -142,7 +160,12 @@ class CliAgent(Invokable):
             "AXOR_TREE_RUN": self.tree_run,
             "AXOR_ROLE": self.role,
             "AXOR_ACCESS": "read" if self.read_only else "write",
+            "AXOR_CONTEXT_STORE": self.context_store,
         })
+        # the context server imports this axor_wrap from wherever it was loaded
+        package_parent = str(__import__("pathlib").Path(__file__).resolve().parents[2])
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (package_parent, env.get("PYTHONPATH", "")) if p)
         fd, last_file = tempfile.mkstemp(prefix="axor-last-", suffix=".txt")
         os.close(fd)
         try:
@@ -192,7 +215,8 @@ class CliAgent(Invokable):
         report = self._report(node_id)
         if not report.get("known"):
             return CausalRoot.cross_process_in()
-        names = {"web": TaintSource.WEB, "mcp": TaintSource.MCP}
+        names = {"web": TaintSource.WEB, "mcp": TaintSource.MCP,
+                 "child_agent": TaintSource.CHILD_AGENT}
         sources = frozenset(names.get(s, TaintSource.UNKNOWN_EXTERNAL)
                             for s in report.get("sources", []))
         return CausalRoot(sources=sources) if sources else None
