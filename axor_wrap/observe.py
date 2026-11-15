@@ -79,6 +79,8 @@ class ToolRecord:
     sent: bool = False         # result (or a denied call) shipped
     fault: dict | None = None
     gate: str = ""             # the gate that denied it, when one did
+    # observe-only (enforcement off): what WOULD have been refused, and why
+    would_deny: dict | None = None
 
 
 @dataclass
@@ -151,6 +153,8 @@ class RunRecorder:
                 if rec.arg_refs:
                     call["arg_refs"] = rec.arg_refs
                     call["arg_provenance"] = "substring"
+                if rec.would_deny:
+                    call["would_deny"] = dict(rec.would_deny)
                 line: dict = {"kind": "tool_call", "payload": call}
                 if rec.status == "denied":
                     line.update(verdict="deny", gate=rec.gate or "budget")

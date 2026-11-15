@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         "hook": _cmd_hook,
         "agents": _cmd_agents,
         "tree": _cmd_tree,
+        "skill": _cmd_skill,
     }[args.command]
     return handler(args)
 
@@ -81,6 +82,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tree.add_argument("action", choices=["run", "check"])
     p_tree.add_argument("spec", type=Path, nargs="?", default=Path("axor.tree.yaml"))
     p_tree.add_argument("--workspace", type=Path, default=Path.cwd())
+    p_skill = sub.add_parser("skill", help="check a skill folder, or dry-run an agent with it")
+    p_skill.add_argument("action", choices=["check", "try"])
+    p_skill.add_argument("path", type=Path, help="the skill folder (SKILL.md and its files)")
+    p_skill.add_argument("--json", action="store_true", help="the report as JSON")
+    p_skill.add_argument("--agent", choices=["claude-code", "codex"], default="claude-code")
+    p_skill.add_argument("--task", default="", help="what to ask the agent (default: use the skill)")
+    p_skill.add_argument("--model", default="")
+    p_skill.add_argument("--repo", type=Path, default=Path.cwd(),
+                         help="the repository to try it on — a copy is used, never this one")
+    p_skill.add_argument("--timeout", type=float, default=900.0)
+    p_skill.add_argument("--keep", action="store_true", help="keep the copy the agent worked in")
     return parser
 
 
@@ -105,6 +117,62 @@ def _cmd_agents(args: argparse.Namespace) -> int:
         print(f"note: {args.agent} is not on PATH here")
     print("Control Plane: set AXOR_PLANE_URL (and AXOR_INGEST_KEY) in the agent's environment.")
     return EXIT_OK
+
+
+def _print_skill_report(report: dict) -> None:
+    head = report["name"] or "this skill"
+    s = report["summary"]
+    print(f"{head}: {len(report['files'])} files · {s['danger']} dangerous · "
+          f"{s['warn']} to look at · {s['info']} other commands")
+    for f in report["findings"]:
+        mark = {"danger": "!!", "warn": " !", "info": "  "}[f["severity"]]
+        print(f"{mark} {f['what']} — {f['where']}")
+        print(f"     {f['snippet']}")
+        print(f"     {f['axor']}")
+    if not report["findings"]:
+        print("nothing here asks the agent to run, fetch, send or change anything")
+
+
+def _cmd_skill(args: argparse.Namespace) -> int:
+    import os
+
+    from axor_wrap.agents.skills import check, read_folder, try_skill
+
+    if not args.path.is_dir():
+        print(f"error: {args.path} is not a folder", file=sys.stderr)
+        return EXIT_EMPTY
+    report = check(read_folder(args.path)).as_dict()
+    if args.action == "check":
+        if args.json:
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+        else:
+            _print_skill_report(report)
+        return EXIT_OK
+    if not args.json:
+        _print_skill_report(report)
+        print(f"\ntrying it: {args.agent} on a copy of {args.repo.resolve()}, "
+              "nothing refused, everything recorded…")
+    result = try_skill(args.path, agent=args.agent, task=args.task, repo=args.repo,
+                       model=args.model, timeout=args.timeout, keep=args.keep)
+    out = {"node_id": result.node_id, "returncode": result.returncode,
+           "answer": result.answer, "report": result.report, "check": report}
+    if args.keep:
+        out["workspace"] = result.workspace
+    if args.json:
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+    else:
+        calls = result.report.get("calls", [])
+        print(f"\n{args.agent} answered ({result.returncode}): {result.answer[:600]}")
+        print(f"{len(calls)} tool calls · outside text read from: "
+              f"{', '.join(result.report.get('sources', [])) or 'nowhere'}")
+        if os.environ.get("AXOR_PLANE_URL"):
+            print(f"on the Control Plane: Try a skill → {result.node_id}")
+        else:
+            print("set AXOR_PLANE_URL (and AXOR_INGEST_KEY) to see the whole run, and "
+                  "what Axor would have refused, on the Control Plane")
+        if args.keep:
+            print(f"the copy it worked in: {result.workspace}")
+    return EXIT_OK if result.returncode == 0 else EXIT_EMPTY
 
 
 def _cmd_tree(args: argparse.Namespace) -> int:

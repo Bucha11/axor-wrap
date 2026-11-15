@@ -308,11 +308,13 @@ class Sidecar:
             if self.enforce:
                 return self._deny(session, event, decision.reason, gate)
             note = f"axor (observe only) would deny this call: {decision.reason}"
+            would = {"gate": gate, "reason": str(decision.reason)}
         else:
-            note = ""
+            note, would = "", None
         session.calls += 1
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)
         record.started = True
+        record.would_deny = would
         session.pending[event.tool_use_id or f"{event.tool}:{len(session.pending)}"] = (
             decision, record, tool, args)
         self._ship(session)

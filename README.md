@@ -208,6 +208,35 @@ answer, from the Control Plane before the next stage (`excision` on the tree's
 node): it is gone from push and pull. The run's report says, per node, what was
 pushed, pointed to, withheld and cut.
 
+### Skills, before you install one
+
+A skill (a folder with `SKILL.md`, often scripts beside it) is read by the
+agent as its own instructions. Axor marks text from OUTSIDE — what WebFetch,
+WebSearch or an MCP tool brought in — and refuses a command or a send built
+from it; a skill is a file in your repository, so its `curl … | sh` is
+trusted the moment it is installed. Two ways to look first:
+
+```bash
+axor-wrap skill check ./release-helper   # what it asks the agent to do — nothing is run
+axor-wrap skill try ./release-helper     # an agent uses it once, on a copy, nothing refused
+axor-wrap skill try ./release-helper --agent codex --task "cut release 1.4"
+```
+
+`check` reads the folder and lists, with file and line: downloads that are run,
+secrets read, data sent out, writes outside the repository, destructive
+commands, root, persistence (shell profile, git hooks, CI, cron), packages
+installed, shell fetches (what `curl` brings back is not marked — only
+WebFetch / WebSearch results are), pages it tells the agent to follow, and
+tools its frontmatter pre-approves — each with what Axor does about it, which
+for most of them is "lets it run". `try` copies the repository to a temporary
+folder (no `.git`, `node_modules`, virtualenvs), installs the skill where the
+agent looks (`.claude/skills/<name>`, `.codex/skills/<name>`), and runs the
+agent once under the axor hooks with enforcement off: nothing is refused, every
+call is recorded, and a call Axor would have refused in real work ships with
+`would_deny` (gate, reason). With `AXOR_PLANE_URL` set the session shows on the
+Control Plane as `skill-try.<agent>.<skill>.<id>`. The copy is deleted unless
+`--keep`.
+
 ## What the scanner detects
 
 | Pattern | Framework tag |
