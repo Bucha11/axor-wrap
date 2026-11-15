@@ -208,11 +208,13 @@ def check(files: Iterable[tuple[str, str]]) -> SkillReport:
     for path, text in files:
         lines = text.splitlines()
         for i, line in enumerate(lines, 1):
-            for kind, pattern in _PATTERNS:
-                if kind == "follows_web" and not path.lower().endswith((".md", ".markdown", ".txt")):
-                    continue
-                if pattern.search(line):
-                    add(kind, f"{path}:{i}", line.strip())
+            hit = [kind for kind, pattern in _PATTERNS if pattern.search(line) and not (
+                kind == "follows_web" and not path.lower().endswith((".md", ".markdown", ".txt")))]
+            # a shell fetch that already downloads-and-runs or sends is said once
+            if any(_SEVERITY[k] == DANGER for k in hit):
+                hit = [k for k in hit if k != "fetches_in_shell"]
+            for kind in dict.fromkeys(hit):
+                add(kind, f"{path}:{i}", line.strip())
         for url in _URL.findall(text):
             if url not in report.urls:
                 report.urls.append(url)
