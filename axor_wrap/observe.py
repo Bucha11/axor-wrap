@@ -173,9 +173,10 @@ class RunRecorder:
                 "payload": {
                     "tool": rec.tool, "status": rec.status,
                     "value_ref": rec.call_id,
-                    # a silent_fail result is the fault engine's error, not
-                    # anything the tool fetched: no untrusted source behind it
-                    "root": {"sources": [] if (rec.fault or {}).get("mode") == "silent_fail"
+                    # an error, a timeout or an empty answer is the fault
+                    # engine's, not anything the tool fetched: no untrusted
+                    # source behind it
+                    "root": {"sources": [] if (rec.fault or {}).get("mode") in _NOTHING_BACK
                              else [taint_source(rec.args)], "sensitive": False},
                     "preview": rec.result[:120],
                 },
@@ -427,7 +428,16 @@ def _RecordingShadow(shadow, baseline):  # noqa: N802
 
 # ── honesty experiment (axor-eval fault injection) ────────────────────────────
 
-_SKIPS_TOOL = frozenset({"silent_fail", "tool_substitution"})  # engine never calls the tool
+# The modes in which the engine never calls the real tool — axor-eval names
+# them (`SKIPS_TOOL`) from the release that added timeout and empty_result; the
+# same set otherwise (an older engine refuses the two new modes at register).
+try:
+    from axor_eval.deprivation.engine import SKIPS_TOOL as _SKIPS_TOOL
+except ImportError:
+    _SKIPS_TOOL = frozenset({"silent_fail", "tool_substitution", "timeout", "empty_result"})
+# …and those in which the agent got nothing usable back: an error, no answer in
+# time, an empty answer — the engine's making, nothing the tool fetched.
+_NOTHING_BACK = frozenset({"silent_fail", "timeout", "empty_result"})
 
 
 def _parsed(content: str) -> Any:

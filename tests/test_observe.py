@@ -73,11 +73,14 @@ def test_link_takes_an_experiment_once():
     assert link.take_experiment() is None
 
 
-def test_silent_fail_result_is_not_tainted():
+@pytest.mark.parametrize("mode", ["silent_fail", "timeout", "empty_result"])
+def test_a_result_the_engine_made_is_not_tainted(mode):
+    """An error, a timeout or an empty answer came from the fault engine, not
+    from the web the call asked: no untrusted source behind it."""
     rec = RunRecorder("n1")
     r = rec.begin_tool("c1", "fetch", {"url": "https://x"})
-    r.fault = {"tool": "fetch", "mode": "silent_fail", "seed": "s", "canary": ""}
-    rec.end_tool(r, '{"error": "tool_unavailable"}')
+    r.fault = {"tool": "fetch", "mode": mode, "seed": "s", "canary": ""}
+    rec.end_tool(r, '{"error": "x"}')
     result = [ln for ln in rec.pending_lines() if ln["kind"] == "tool_result"][0]
     assert result["payload"]["root"]["sources"] == []
 
