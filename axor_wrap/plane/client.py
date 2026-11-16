@@ -209,6 +209,24 @@ class PlaneClient:
             return False
         return response.status_code < 300
 
+    async def get_coding_policy(self) -> dict | None:
+        """The organization's coding-agent policy (skills turned off), or None
+        when the plane cannot be asked — the caller keeps what it last knew."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{self._base}/v1/coding/policy",
+                                            headers=self._auth())
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 300:
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        return body if isinstance(body, dict) else None
+
     async def post_tree(self, snapshot: dict) -> bool:
         """POST a tree run's snapshot to ``/v1/trees/{tree_run}`` — this node
         IS the tree run. Replaced on the plane each time. Best-effort: False

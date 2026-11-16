@@ -298,3 +298,39 @@ def refusal(rule: Rule) -> str:
     return (f"this call {rule.what} — {rule.why}. Refused by the axor rule "
             f"'{rule.id}'; if this repository needs it, add it to .axor/rules.json "
             f'{{"allow": ["{rule.id}"]}}.')
+
+
+# ── skills turned off ────────────────────────────────────────────────────────
+# A skill is turned off for a team from the Control Plane (or for a repository
+# in .axor/rules.json "skills_off"). The plane cannot remove it from anyone's
+# disk; the hooks refuse the agent's USE of it: the Skill call naming it, and
+# any read, edit or command touching a file under its folder. Its name and
+# description stay in the agent's context until the folder is removed.
+
+def _skill_path(name: str) -> re.Pattern[str]:
+    return re.compile(rf"(?:^|[\s/'\"=~])\.(?:claude|codex)/skills/{re.escape(name)}(?:/|$|[\s'\"])")
+
+
+def skill_refusal(tool: str, args: dict, off: set[str] | frozenset[str]) -> str | None:
+    """Why this call is refused because it uses a turned-off skill, or None."""
+    if not off:
+        return None
+    named = ""
+    if tool == "skill":
+        named = str(args.get("skill") or args.get("name") or args.get("command") or "")
+        named = named.rsplit(":", 1)[-1].strip().lstrip("/")
+    text = " ".join(str(v) for v in args.values())
+    for name in sorted(off):
+        if named == name or _skill_path(name).search(text):
+            return (f"the skill '{name}' is turned off from the Control Plane for this "
+                    "team — do not use it or read its files; carry on without it.")
+    return None
+
+
+def local_skills_off(root: str) -> set[str]:
+    """``.axor/rules.json`` ``{"skills_off": [...]}`` — a repository's own."""
+    try:
+        data = json.loads((Path(root) / ".axor" / "rules.json").read_text(encoding="utf-8"))
+        return {str(x) for x in data.get("skills_off", []) if isinstance(x, str)}
+    except (OSError, ValueError, AttributeError):
+        return set()

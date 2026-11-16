@@ -232,6 +232,21 @@ A repository that needs one turns it off by id in `.axor/rules.json`
 turned off from inside the workspace. A refusal tells the agent which rule and
 how to allow it, and ships to the plane with gate `consequence`.
 
+### Skills turned off for the team
+
+A skill can be turned off for every developer from the Control Plane (Skill
+evals → a skill's card → "turn off for the team"), or for one repository in
+`.axor/rules.json` (`{"skills_off": ["test-first"]}`). Each sidecar asks the
+plane for the list every 30 s (`AXOR_POLICY_TTL`) on the developer's ingest key,
+keeps the last answer through an outage, and refuses the agent's use of a
+turned-off skill: the `Skill` call naming it, and any read, edit or command
+touching `.claude/skills/<name>/` or `.codex/skills/<name>/`. The refusal names
+the skill and ships to the plane, which counts the attempts. What this cannot
+do: the agent loads each installed skill's name and description at start, so
+those stay in its context until the folder is removed — the plane does not
+touch anyone's disk. (`.axor/rules.json` itself is the agent's own guard: it
+cannot edit it.)
+
 ### Skills, before you install one
 
 A skill (a folder with `SKILL.md`, often scripts beside it) is read by the

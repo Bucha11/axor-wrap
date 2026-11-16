@@ -299,3 +299,49 @@ def test_the_home_example_is_refused_by_where_it_came_from_not_by_a_rule(links) 
     # the imperative channel — never by a rule
     assert out["allow"] is False
     assert "taint" in out["reason"] or "untrusted" in out["reason"]
+
+
+class PolicyLink(FakeLink):
+    """A link whose plane answers the coding policy (and counts the asks)."""
+
+    def __init__(self, node_id: str, policy: dict | None) -> None:
+        super().__init__(node_id)
+        self.policy, self.asked = policy, 0
+        outer = self
+
+        async def get_coding_policy():
+            outer.asked += 1
+            if outer.policy is None:
+                raise OSError("plane unreachable")
+            return outer.policy
+
+        self.connector.get_coding_policy = get_coding_policy
+
+    def deliver(self, fn, timeout=15.0):
+        import asyncio
+
+        return asyncio.run(fn())
+
+
+def test_a_skill_turned_off_on_the_plane_is_refused(monkeypatch) -> None:
+    links: dict[str, PolicyLink] = {}
+
+    def factory(node_id: str) -> PolicyLink:
+        links[node_id] = PolicyLink(node_id, {"skills_off": ["test-first"]})
+        return links[node_id]
+
+    car = Sidecar("/repo", enforce=True, link_factory=factory)
+    out = car.handle(pre("claude-code", "Skill", {"skill": "test-first"}))
+    assert out["allow"] is False and "turned off from the Control Plane" in out["reason"]
+    out = car.handle(pre("claude-code", "Read", {"file_path": ".claude/skills/test-first/SKILL.md"},
+                         tid="t2"))
+    assert out["allow"] is False
+    assert car.handle(pre("claude-code", "Skill", {"skill": "changelog-entries"}, tid="t3"))["allow"]
+    link = next(iter(links.values()))
+    assert link.asked == 1                     # asked once, then cached
+    [denied, _] = [ln for ln in lines_of(link) if ln.get("verdict") == "deny"]
+    assert denied["gate"] == "capability" and "'test-first'" in denied["payload"]["reason"]
+    # an outage keeps what was last known
+    link.policy = None
+    monkeypatch.setattr("axor_wrap.agents.sidecar.POLICY_TTL", 0.0)
+    assert car.handle(pre("claude-code", "Skill", {"skill": "test-first"}, tid="t4"))["allow"] is False

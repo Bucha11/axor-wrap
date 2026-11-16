@@ -352,6 +352,13 @@ class PlaneConnector:
         assert self._client is not None
         return await self._client.post_profile(kind, agent, developer)
 
+    async def get_coding_policy(self) -> dict | None:
+        """The organization's coding policy (PlaneClient.get_coding_policy)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.get_coding_policy()
+
     async def post_tree(self, snapshot: dict) -> bool:
         """A tree run's snapshot (axor_wrap.agents.tree), under this node."""
         if self._client is None:

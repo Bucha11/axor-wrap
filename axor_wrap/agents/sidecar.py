@@ -38,6 +38,8 @@ ENV_SOCKET = "AXOR_SIDECAR_SOCKET"
 ENV_IDLE = "AXOR_SIDECAR_IDLE"
 # off = govern and record, deny nothing (verdicts become notes to the agent)
 ENV_ENFORCE = "AXOR_ENFORCE"
+# how often a sidecar re-asks the plane which skills are turned off
+POLICY_TTL = float(os.environ.get("AXOR_POLICY_TTL", "30"))
 
 
 def socket_path(root: str) -> str:
@@ -185,6 +187,9 @@ class Sidecar:
         self.by_node: dict[str, _Session] = {}
         self.last_event = time.time()
         self._lock = threading.Lock()
+        # skills turned off from the plane: (fetched at, names); re-asked
+        # every POLICY_TTL seconds, the last answer kept through an outage
+        self._skills_off: tuple[float, frozenset[str]] = (0.0, frozenset())
 
     # ── sessions ──────────────────────────────────────────────────────────────
 
@@ -243,6 +248,24 @@ class Sidecar:
             _log.warning("axor: no Control-Plane link for %s: %s", node_id, exc)
             return None
 
+    def skills_off(self, link: Any) -> frozenset[str]:
+        """The organization's turned-off skills, asked of the plane at most
+        every POLICY_TTL seconds through a session's link."""
+        fetched, names = self._skills_off
+        if link is None or time.time() - fetched < POLICY_TTL:
+            return names
+        deliver = getattr(link, "deliver", None)
+        policy = None
+        if deliver is not None:
+            try:
+                policy = deliver(lambda: link.connector.get_coding_policy(), 3.0)
+            except Exception:  # noqa: BLE001 - an outage keeps the last answer
+                policy = None
+        if isinstance(policy, dict) and isinstance(policy.get("skills_off"), list):
+            names = frozenset(str(x) for x in policy["skills_off"])
+        self._skills_off = (time.time(), names)
+        return names
+
     def _ship(self, session: _Session, extra: list[dict] | None = None) -> None:
         link = session.link
         if link is None:
@@ -294,6 +317,10 @@ class Sidecar:
                                   f"the call budget set from the Control Plane ({cap}) "
                                   "is spent", "budget")
         tool, args = taxonomy.canonical(event.agent, event.tool, event.tool_input)
+        off = self.skills_off(link) | rules.local_skills_off(self.root)
+        skill = rules.skill_refusal(tool, args, off)
+        if skill is not None and self.enforce:
+            return self._deny(session, event, skill, "capability")
         if event.access == "read":
             refusal = taxonomy.read_only_refusal(tool, args)
             if refusal is not None:
@@ -304,9 +331,12 @@ class Sidecar:
         if rule is not None and self.enforce:
             return self._deny(session, event, rules.refusal(rule), "consequence")
         decision = session.governor.evaluate(tool, args)
-        if rule is not None:
+        if skill is not None:
+            note = f"axor (observe only) would deny this call: {skill}"
+            would: dict | None = {"gate": "capability", "reason": skill}
+        elif rule is not None:
             note = f"axor (observe only) would deny this call: {rules.refusal(rule)}"
-            would: dict | None = {"gate": "consequence", "rule": rule.id,
+            would = {"gate": "consequence", "rule": rule.id,
                                   "reason": rules.refusal(rule)}
         elif not decision.allowed:
             from axor_core.governor import gate_of

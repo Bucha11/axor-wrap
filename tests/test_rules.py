@@ -85,3 +85,43 @@ def test_allow_list_from_the_repository_and_the_environment(tmp_path, monkeypatc
     allow = allowed_rules(str(tmp_path))
     assert allow == {"privilege", "destructive"}      # the guard itself is never allowed
     assert check_call("bash", {"command": "sudo make install"}, str(tmp_path), allow) is None
+
+
+# ── skills turned off ────────────────────────────────────────────────────────
+
+from axor_wrap.agents.rules import local_skills_off, skill_refusal  # noqa: E402
+
+OFF = {"test-first"}
+
+
+@pytest.mark.parametrize(("tool", "args"), [
+    ("skill", {"skill": "test-first"}),
+    ("skill", {"command": "/test-first"}),
+    ("skill", {"skill": "my-plugin:test-first"}),
+    ("read", {"path": "/repo/.claude/skills/test-first/SKILL.md"}),
+    ("read", {"path": ".codex/skills/test-first/notes.md"}),
+    ("bash", {"command": "bash .claude/skills/test-first/scripts/run.sh"}),
+    ("bash", {"command": "cat ~/.claude/skills/test-first/SKILL.md"}),
+    ("write", {"path": ".claude/skills/test-first/SKILL.md", "content": "x"}),
+])
+def test_a_turned_off_skill_is_refused_however_it_is_reached(tool: str, args: dict) -> None:
+    reason = skill_refusal(tool, args, OFF)
+    assert reason is not None and "the skill 'test-first' is turned off from the Control Plane" in reason
+
+
+@pytest.mark.parametrize(("tool", "args"), [
+    ("skill", {"skill": "changelog-entries"}),
+    ("read", {"path": ".claude/skills/test-first-v2/SKILL.md"}),
+    ("read", {"path": "docs/test-first.md"}),
+    ("bash", {"command": "pytest -q"}),
+])
+def test_other_skills_and_work_pass(tool: str, args: dict) -> None:
+    assert skill_refusal(tool, args, OFF) is None
+    assert skill_refusal("skill", {"skill": "test-first"}, set()) is None
+
+
+def test_a_repository_can_turn_a_skill_off_itself(tmp_path) -> None:
+    (tmp_path / ".axor").mkdir()
+    (tmp_path / ".axor" / "rules.json").write_text('{"skills_off": ["house-style"]}')
+    assert local_skills_off(str(tmp_path)) == {"house-style"}
+    assert local_skills_off(str(tmp_path / "nowhere")) == set()
