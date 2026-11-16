@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from axor_wrap.agents import rules, taxonomy
+from axor_wrap.agents import checks, rules, taxonomy
 from axor_wrap.agents.events import HookEvent
 
 _log = logging.getLogger("axor.wrap.agents.sidecar")
@@ -394,6 +394,18 @@ class Sidecar:
             session.executed.append((tool, args))
             if tool in taxonomy.UNTRUSTED_SOURCES:
                 session.sources.add("mcp" if tool == "mcp_tool" else "web")
+        if tool == "bash":
+            # read the whole output here — only 120 characters of it ship
+            response = event.tool_response if isinstance(event.tool_response, dict) else {}
+            code = response.get("exit_code", response.get("exitCode"))
+            # the runner's own text, unescaped: Claude Code's stdout/stderr on
+            # success, its `error` string on a failure; the raw output else
+            raw = "\n".join(str(response[k]) for k in ("stdout", "stderr", "error", "output")
+                            if isinstance(response.get(k), str)) or output
+            record.check = checks.check_of(
+                str(args.get("command", "")), raw,
+                failed=status == "error" or (isinstance(code, int) and code != 0),
+                interrupted=bool(response.get("interrupted")))
         session.recorder.end_tool(record, output, status=status)
         self._ship(session)
         return {"allow": True}

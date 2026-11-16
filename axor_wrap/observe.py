@@ -82,6 +82,9 @@ class ToolRecord:
     # observe-only (enforcement off): what WOULD have been refused, and why
     would_deny: dict | None = None
     reason: str = ""           # why it was denied, when it was
+    # a check command (tests, build, lint, typecheck) and what it found
+    # (axor_wrap.agents.checks) — the plane holds the agent's last word to it
+    check: dict | None = None
 
 
 @dataclass
@@ -179,6 +182,7 @@ class RunRecorder:
                     "root": {"sources": [] if (rec.fault or {}).get("mode") in _NOTHING_BACK
                              else [taint_source(rec.args)], "sensitive": False},
                     "preview": rec.result[:120],
+                    **({"check": dict(rec.check)} if rec.check else {}),
                 },
             })
         return lines

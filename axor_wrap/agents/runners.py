@@ -24,7 +24,7 @@ from typing import Any
 from axor_core.contracts.invokable import Invokable
 from axor_core.contracts.result import ExecutorEvent, ExecutorEventKind
 
-from axor_wrap.agents.install import EVENTS, hook_command
+from axor_wrap.agents.install import events_for, hook_command
 
 _READ_ONLY_CLAUDE_TOOLS = "Write,Edit,MultiEdit,NotebookEdit"
 
@@ -34,9 +34,9 @@ def _claude_hooks() -> str:
     whether or not the workspace has them installed."""
     command = hook_command("claude-code")
     hooks: dict = {}
-    for event in EVENTS:
+    for event in events_for("claude-code"):
         entry: dict = {"hooks": [{"type": "command", "command": command, "timeout": 30}]}
-        if event in ("PreToolUse", "PostToolUse"):
+        if event in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             entry = {"matcher": "*", **entry}
         hooks[event] = [entry]
     return json.dumps({"hooks": hooks})

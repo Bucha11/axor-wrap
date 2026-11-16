@@ -20,6 +20,9 @@ AGENTS = ("claude-code", "codex")
 _KINDS = {
     "PreToolUse": "pre_tool",
     "PostToolUse": "post_tool",
+    # Claude Code: a call that failed — a non-zero exit, a tool error —
+    # arrives here instead of PostToolUse, with `error` ("Exit code 1\n…")
+    "PostToolUseFailure": "post_tool",
     "UserPromptSubmit": "prompt",
     "Stop": "stop",
     "SubagentStop": "subagent_stop",
@@ -76,7 +79,10 @@ def parse_event(agent: str, raw: str | dict, env: dict | None = None) -> HookEve
         tool=str(data.get("tool_name") or ""),
         tool_input=tool_input if isinstance(tool_input, dict) else
         ({"input": tool_input} if tool_input is not None else {}),
-        tool_response=data.get("tool_response"),
+        tool_response=data.get("tool_response") if "tool_response" in data else (
+            {"error": str(data.get("error") or "failed"), "is_error": True,
+             "interrupted": bool(data.get("is_interrupt"))}
+            if data.get("hook_event_name") == "PostToolUseFailure" else None),
         tool_use_id=str(data.get("tool_use_id") or ""),
         prompt=str(data.get("prompt") or ""),
         last_message=str(data.get("last_assistant_message") or ""),

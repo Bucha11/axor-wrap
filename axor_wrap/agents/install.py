@@ -17,7 +17,15 @@ from pathlib import Path
 
 EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SessionEnd")
 # events that filter on a tool name take a matcher
-_TOOL_EVENTS = ("PreToolUse", "PostToolUse")
+_TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
+
+
+def events_for(agent: str) -> tuple[str, ...]:
+    """The hook events an agent is given. Claude Code reports a failed call —
+    a non-zero exit, a tool error — as PostToolUseFailure, not PostToolUse:
+    without it a failing test run was never recorded at all. Codex runs its
+    PostToolUse after a non-zero exit too, and has no such event."""
+    return EVENTS + ("PostToolUseFailure",) if agent == "claude-code" else EVENTS
 _MARK = "axor_wrap.cli hook"
 
 
@@ -46,7 +54,7 @@ def install(agent: str, project: Path, *, user: bool = False,
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     hooks = data.setdefault("hooks", {})
     command = hook_command(agent)
-    for event in EVENTS:
+    for event in events_for(agent):
         kept = [e for e in hooks.get(event, []) if not _ours(e)]
         entry: dict = {"hooks": [{"type": "command", "command": command,
                                   "timeout": timeout}]}
