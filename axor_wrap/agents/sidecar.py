@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from axor_wrap.agents import taxonomy
+from axor_wrap.agents import rules, taxonomy
 from axor_wrap.agents.events import HookEvent
 
 _log = logging.getLogger("axor.wrap.agents.sidecar")
@@ -273,6 +273,7 @@ class Sidecar:
     def _deny(self, session: _Session, event: HookEvent, reason: str, gate: str) -> dict:
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)
         record.gate = gate
+        record.reason = reason
         session.recorder.end_tool(record, "", status="denied")
         self._ship(session)
         return {"allow": False, "reason": f"axor: {reason}"}
@@ -297,8 +298,17 @@ class Sidecar:
             refusal = taxonomy.read_only_refusal(tool, args)
             if refusal is not None:
                 return self._deny(session, event, refusal, "capability")
+        # what is refused whoever asked: a skill's curl | sh, a read of
+        # ~/.aws/credentials, a force push (axor_wrap.agents.rules)
+        rule = rules.check_call(tool, args, self.root, rules.allowed_rules(self.root))
+        if rule is not None and self.enforce:
+            return self._deny(session, event, rules.refusal(rule), "consequence")
         decision = session.governor.evaluate(tool, args)
-        if not decision.allowed:
+        if rule is not None:
+            note = f"axor (observe only) would deny this call: {rules.refusal(rule)}"
+            would: dict | None = {"gate": "consequence", "rule": rule.id,
+                                  "reason": rules.refusal(rule)}
+        elif not decision.allowed:
             from axor_core.governor import gate_of
 
             try:

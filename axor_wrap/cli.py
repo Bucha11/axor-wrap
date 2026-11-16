@@ -151,7 +151,7 @@ def _cmd_skill(args: argparse.Namespace) -> int:
     if not args.json:
         _print_skill_report(report)
         print(f"\ntrying it: {args.agent} on a copy of {args.repo.resolve()}, "
-              "nothing refused, everything recorded…")
+              "Axor enforcing as in real work…")
     result = try_skill(args.path, agent=args.agent, task=args.task, repo=args.repo,
                        model=args.model, timeout=args.timeout, keep=args.keep)
     out = {"node_id": result.node_id, "returncode": result.returncode,

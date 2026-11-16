@@ -2,22 +2,21 @@
 
 A skill is a folder an agent picks up — ``SKILL.md`` with instructions, and
 often scripts beside it. What it tells the agent to do arrives as the agent's
-own instructions: Axor marks text that came from OUTSIDE (a page WebFetch read,
-a search result, an MCP answer) and refuses a command or a send built from it,
-but a skill is a file in your repository. Its ``curl … | sh`` is trusted the
-moment you install it. So before installing one, two questions:
+own instructions. Axor refuses what OUTSIDE text drives (a page WebFetch read,
+a search result) and, whoever asked, the calls in :mod:`axor_wrap.agents.rules`
+— downloads that are run, secrets read, files sent out, writes outside the
+repository, force pushes, root. What neither covers runs. And a script the
+skill ships is one call to Axor (``bash scripts/x.sh``): what it does inside is
+not seen. So before installing one, two questions:
 
 - :func:`check` — what does it ask the agent to do? A static read of the
-  folder, no agent, no model: downloads that are run, secrets read, data sent
-  out, writes outside the repository, destructive commands, persistence,
-  packages installed, tools it pre-approves, pages it tells the agent to follow
-  — each with where it is and what Axor does about it (usually: nothing, and
-  the report says so).
+  folder, no agent, no model — each finding with where it is and what Axor
+  does about it: refuses it (and by which rule), or lets it run.
 - :func:`try_skill` — what does an agent actually do with it? The agent runs
   once with the skill on a throwaway copy of the repository, under the axor
-  hooks with enforcement OFF: nothing is refused, everything is recorded, and
-  each call Axor would have refused in real work is marked. The session goes
-  to the Control Plane as ``skill-try.<agent>.<skill>.<id>``.
+  hooks, enforcing as in real work: the dangerous calls are refused and
+  recorded. The session goes to the Control Plane as
+  ``skill-try.<agent>.<skill>.<id>``.
 """
 from __future__ import annotations
 
@@ -31,17 +30,17 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from axor_wrap.agents import rules as _rules
 from axor_wrap.agents.taxonomy import read_only_command
 
 DANGER, WARN, INFO = "danger", "warn", "info"
 _SEVERITY_ORDER = {DANGER: 0, WARN: 1, INFO: 2}
 
 # what Axor does about each kind, in words (the honest part of the report)
-AXOR_LETS_IT_RUN = ("Axor lets this run: it comes from the skill, and the agent "
-                    "takes a skill as its own instructions.")
+AXOR_LETS_IT_RUN = ("Axor lets this run: no rule covers it, and the agent takes a "
+                    "skill as its own instructions.")
 _AXOR = {
-    "download_and_run": "Axor lets this run: the command comes from the skill, and what "
-                        "it downloads never passes through the agent.",
+    "download_and_run": AXOR_LETS_IT_RUN,
     "secrets": AXOR_LETS_IT_RUN,
     "sends_out": AXOR_LETS_IT_RUN,
     "writes_outside": AXOR_LETS_IT_RUN,
@@ -178,6 +177,28 @@ def _commands(path: str, text: str) -> Iterable[tuple[int, str]]:
                 yield text.count("\n", 0, m.start()) + 1, s.removeprefix("$").strip()
 
 
+_SCRIPTS = (".sh", ".bash", ".zsh", ".ps1", ".py", ".js", ".mjs", ".ts")
+INSIDE_A_SCRIPT = ("Inside a script: Axor sees the call that starts it (bash scripts/…), "
+                   "not this line — read the script before you install the skill.")
+
+
+def _axor_says(kind: str, where: str, snippet: str) -> str:
+    """What Axor does about one finding, from the same rules the hooks run."""
+    path = where.rsplit(":", 1)[0]
+    if kind in ("follows_web", "pre_approves", "fetches_in_shell"):
+        return _AXOR[kind]
+    if path.lower().endswith(_SCRIPTS):
+        return INSIDE_A_SCRIPT
+    command = snippet.strip().strip("`").removeprefix("$").strip()
+    # a sentence around a command (`cat ~/.aws/credentials` in prose)
+    inline = re.findall(r"`([^`]+)`", snippet)
+    for candidate in [*inline, command]:
+        rule = _rules.check_call("bash", {"command": candidate}, "/workspace")
+        if rule is not None:
+            return f"Axor refuses this: {rule.what} ({rule.id})."
+    return _AXOR[kind]
+
+
 def check(files: Iterable[tuple[str, str]]) -> SkillReport:
     """What a skill folder asks an agent to do — a static read, nothing run."""
     files = [(p.replace("\\", "/"), t) for p, t in files]
@@ -203,7 +224,7 @@ def check(files: Iterable[tuple[str, str]]) -> SkillReport:
             return
         seen.add(key)
         report.findings.append(Finding(kind, _SEVERITY[kind], _WHAT[kind], where,
-                                       snippet[:240], _AXOR[kind]))
+                                       snippet[:240], _axor_says(kind, where, snippet)))
 
     for path, text in files:
         lines = text.splitlines()
@@ -306,7 +327,7 @@ def default_task(agent: str, name: str) -> str:
 def try_skill(skill_dir: Path, *, agent: str = "claude-code", task: str = "",
               repo: Path | None = None, model: str = "", timeout: float = 900.0,
               keep: bool = False) -> TryResult:
-    """Run the agent once with the skill, on a copy, enforcement off."""
+    """Run the agent once with the skill, on a copy, Axor enforcing."""
     from axor_wrap.agents import client
     from axor_wrap.agents.install import install
     from axor_wrap.agents.runners import default_argv, parse_output
@@ -318,11 +339,11 @@ def try_skill(skill_dir: Path, *, agent: str = "claude-code", task: str = "",
     if agent == "codex":
         install("codex", work)
     env = dict(os.environ)
-    env.update({"AXOR_NODE_ID": node_id, "AXOR_ENFORCE": "off", "AXOR_ROLE": "skill-try"})
-    # the copy's own sidecar, started observe-only: it records what would have
-    # been refused and refuses nothing
+    env.update({"AXOR_NODE_ID": node_id, "AXOR_ENFORCE": "1", "AXOR_ROLE": "skill-try"})
+    # the copy's own sidecar, enforcing as in real work: a dry run must not
+    # be how a skill's curl | sh or credential upload gets to run
     saved = os.environ.get("AXOR_ENFORCE")
-    os.environ["AXOR_ENFORCE"] = "off"
+    os.environ["AXOR_ENFORCE"] = "1"
     try:
         client.ensure_sidecar(client.workspace_root(str(work)))
     finally:

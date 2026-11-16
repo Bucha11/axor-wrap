@@ -208,34 +208,57 @@ answer, from the Control Plane before the next stage (`excision` on the tree's
 node): it is gone from push and pull. The run's report says, per node, what was
 pushed, pointed to, withheld and cut.
 
+### What is refused whoever asked
+
+The governor refuses what OUTSIDE text drives — a command built from a page
+WebFetch read. That leaves the agent's own instructions: a skill, a CLAUDE.md,
+the task itself. So every call is also checked against a short list of things a
+coding task almost never needs and an attacker almost always does — refused in
+every session, whatever asked for it (`axor_wrap/agents/rules.py`):
+
+| rule | refused | passes |
+|---|---|---|
+| `download_and_run` | `curl … \| sh`, `bash <(curl …)` | `curl -s https://api…` |
+| `secrets` | `cat ~/.aws/credentials`, Read `.env`, `echo $API_KEY`, `printenv` | `cp .env.example .env`, `$TOKEN` in a header |
+| `sends_out` | `curl -d @file`, `-F x=@file`, `\| nc host`, `scp f host:` | `curl -X POST -d '{…}' localhost` |
+| `persistence` | `~/.bashrc`, `.git/hooks/`, `crontab file`, `systemctl enable` | `crontab -l` |
+| `writes_outside` | Write `/etc/…`, `~/…` outside the repository | the repository, `/tmp` |
+| `destructive` | `rm -rf ~`, `rm -rf` outside the repository, `git push --force`, `mkfs` | `rm -rf node_modules`, `--force-with-lease` |
+| `privilege` | `sudo`, `su`, `doas` | |
+| `agent_config` | editing `.claude/settings*.json`, `.codex/hooks.json`, `.axor/rules.json` | |
+
+A repository that needs one turns it off by id in `.axor/rules.json`
+(`{"allow": ["force_push"]}`) or `AXOR_ALLOW_RULES`; `agent_config` cannot be
+turned off from inside the workspace. A refusal tells the agent which rule and
+how to allow it, and ships to the plane with gate `consequence`.
+
 ### Skills, before you install one
 
 A skill (a folder with `SKILL.md`, often scripts beside it) is read by the
-agent as its own instructions. Axor marks text from OUTSIDE — what WebFetch,
-WebSearch or an MCP tool brought in — and refuses a command or a send built
-from it; a skill is a file in your repository, so its `curl … | sh` is
-trusted the moment it is installed. Two ways to look first:
+agent as its own instructions. The rules above still hold for it; what they do
+not cover runs, and a script the skill ships is one call (`bash scripts/x.sh`)
+— what it does inside is not seen. Two ways to look first:
 
 ```bash
 axor-wrap skill check ./release-helper   # what it asks the agent to do — nothing is run
-axor-wrap skill try ./release-helper     # an agent uses it once, on a copy, nothing refused
+axor-wrap skill try ./release-helper     # an agent uses it once, on a copy, Axor enforcing
 axor-wrap skill try ./release-helper --agent codex --task "cut release 1.4"
 ```
 
 `check` reads the folder and lists, with file and line: downloads that are run,
 secrets read, data sent out, writes outside the repository, destructive
-commands, root, persistence (shell profile, git hooks, CI, cron), packages
-installed, shell fetches (what `curl` brings back is not marked — only
-WebFetch / WebSearch results are), pages it tells the agent to follow, and
-tools its frontmatter pre-approves — each with what Axor does about it, which
-for most of them is "lets it run". `try` copies the repository to a temporary
-folder (no `.git`, `node_modules`, virtualenvs), installs the skill where the
-agent looks (`.claude/skills/<name>`, `.codex/skills/<name>`), and runs the
-agent once under the axor hooks with enforcement off: nothing is refused, every
-call is recorded, and a call Axor would have refused in real work ships with
-`would_deny` (gate, reason). With `AXOR_PLANE_URL` set the session shows on the
-Control Plane as `skill-try.<agent>.<skill>.<id>`. The copy is deleted unless
-`--keep`.
+commands, root, persistence, packages installed, shell fetches (what `curl`
+brings back is not marked — only WebFetch / WebSearch results are), pages it
+tells the agent to follow, and tools its frontmatter pre-approves — each with
+what Axor does about it: refused (by which rule), let run, or "inside a script".
+`try` copies the repository to a temporary folder (no `.git`, `node_modules`,
+virtualenvs), installs the skill where the agent looks (`.claude/skills/<name>`,
+`.codex/skills/<name>`), and runs the agent once under the axor hooks, enforcing
+as in real work — a dry run is not how a skill's `curl | sh` gets to run. With
+`AXOR_PLANE_URL` set the session shows on the Control Plane as
+`skill-try.<agent>.<skill>.<id>`, its refusals with their rule. The copy is
+deleted unless `--keep`. (With `AXOR_ENFORCE=off` a session records instead of
+refusing: each call that would have been refused ships with `would_deny`.)
 
 ## What the scanner detects
 

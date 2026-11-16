@@ -81,6 +81,7 @@ class ToolRecord:
     gate: str = ""             # the gate that denied it, when one did
     # observe-only (enforcement off): what WOULD have been refused, and why
     would_deny: dict | None = None
+    reason: str = ""           # why it was denied, when it was
 
 
 @dataclass
@@ -158,6 +159,8 @@ class RunRecorder:
                 line: dict = {"kind": "tool_call", "payload": call}
                 if rec.status == "denied":
                     line.update(verdict="deny", gate=rec.gate or "budget")
+                    if rec.reason:
+                        call["reason"] = rec.reason
                 lines.append(line)
             if not rec.finished or rec.sent:
                 continue
