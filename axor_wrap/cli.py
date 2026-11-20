@@ -82,8 +82,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tree.add_argument("action", choices=["run", "check"])
     p_tree.add_argument("spec", type=Path, nargs="?", default=Path("axor.tree.yaml"))
     p_tree.add_argument("--workspace", type=Path, default=Path.cwd())
-    p_skill = sub.add_parser("skill", help="check a skill folder, or dry-run an agent with it")
-    p_skill.add_argument("action", choices=["check", "try"])
+    p_skill = sub.add_parser("skill", help="check a skill folder, dry-run an agent with it, "
+                                           "or share it with the team on the Control Plane")
+    p_skill.add_argument("action", choices=["check", "try", "share"])
     p_skill.add_argument("path", type=Path, help="the skill folder (SKILL.md and its files)")
     p_skill.add_argument("--json", action="store_true", help="the report as JSON")
     p_skill.add_argument("--agent", choices=["claude-code", "codex"], default="claude-code")
@@ -141,7 +142,10 @@ def _cmd_skill(args: argparse.Namespace) -> int:
     if not args.path.is_dir():
         print(f"error: {args.path} is not a folder", file=sys.stderr)
         return EXIT_EMPTY
-    report = check(read_folder(args.path)).as_dict()
+    files = read_folder(args.path)
+    report = check(files).as_dict()
+    if args.action == "share":
+        return _share_skill(args.path, files, report)
     if args.action == "check":
         if args.json:
             print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -173,6 +177,37 @@ def _cmd_skill(args: argparse.Namespace) -> int:
         if args.keep:
             print(f"the copy it worked in: {result.workspace}")
     return EXIT_OK if result.returncode == 0 else EXIT_EMPTY
+
+
+def _share_skill(path: Path, files: list[tuple[str, str]], report: dict) -> int:
+    """Upload a skill folder to the Control Plane, where someone can turn it
+    on for the team: every developer's sidecar then installs it."""
+    import asyncio
+    import os
+
+    from axor_wrap.agents.skills import skill_name
+    from axor_wrap.plane.client import PlaneClient
+    from axor_wrap.plane.session import PlaneSession
+
+    _print_skill_report(report)
+    url = os.environ.get("AXOR_PLANE_URL")
+    if not url:
+        print("error: set AXOR_PLANE_URL (and AXOR_INGEST_KEY) to share a skill", file=sys.stderr)
+        return EXIT_EMPTY
+    name = skill_name(path)
+    client = PlaneClient(url, PlaneSession(node_id="skill-share"),
+                         ingest_key=os.environ.get("AXOR_INGEST_KEY") or None)
+    answer = asyncio.run(client.post_skill_bundle(
+        name, [{"path": p, "content": c} for p, c in files]))
+    if "error" in answer:
+        print(f"error: {answer['error']}", file=sys.stderr)
+        return EXIT_EMPTY
+    live = answer.get("live_version")
+    print(f"\nshared {name} (version {answer.get('version', '?')}) — on the Control Plane: "
+          "Skill evals → team skills.")
+    print("It reaches nobody until someone turns it on for the team there."
+          if live != answer.get("version") else "This version is already on for the team.")
+    return EXIT_OK
 
 
 def _cmd_tree(args: argparse.Namespace) -> int:

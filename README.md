@@ -247,6 +247,23 @@ those stay in its context until the folder is removed — the plane does not
 touch anyone's disk. (`.axor/rules.json` itself is the agent's own guard: it
 cannot edit it.)
 
+### Skills shared with the team
+
+The other way round: a skill that works for one developer, installed for all
+of them. `axor-wrap skill share ./.claude/skills/<name>` uploads the folder
+(with `AXOR_PLANE_URL` and `AXOR_INGEST_KEY` set); it reaches nobody until
+someone turns it on for the team on the Control Plane (Skill evals → shared
+with the team). Then each sidecar — at session start (Claude Code's
+`SessionStart` hook) and with every policy refresh — installs it into the
+agent's skills folder (`~/.claude/skills/<name>`, `~/.codex/skills/<name>`) at
+the version turned on. A new upload reaches nobody until it is turned on
+again; taken off the team, or turned off for it, the copies are removed.
+
+Only folders the sidecar wrote are touched — each carries `.axor-team.json`.
+A developer's own skill of the same name is never overwritten.
+`AXOR_TEAM_SKILLS=0` opts a machine out. A shared skill is governed like any
+other: the rules above still apply to what it asks the agent to do.
+
 ### Skills, before you install one
 
 A skill (a folder with `SKILL.md`, often scripts beside it) is read by the

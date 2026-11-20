@@ -359,6 +359,13 @@ class PlaneConnector:
         assert self._client is not None
         return await self._client.get_coding_policy()
 
+    async def get_skill_bundle(self, name: str) -> dict | None:
+        """A skill turned on for the team (PlaneClient.get_skill_bundle)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.get_skill_bundle(name)
+
     async def post_tree(self, snapshot: dict) -> bool:
         """A tree run's snapshot (axor_wrap.agents.tree), under this node."""
         if self._client is None:

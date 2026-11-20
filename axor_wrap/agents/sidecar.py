@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from axor_wrap.agents import checks, rules, taxonomy
+from axor_wrap.agents import checks, rules, taxonomy, team_skills
 from axor_wrap.agents.events import HookEvent
 
 _log = logging.getLogger("axor.wrap.agents.sidecar")
@@ -189,7 +189,7 @@ class Sidecar:
         self._lock = threading.Lock()
         # skills turned off from the plane: (fetched at, names); re-asked
         # every POLICY_TTL seconds, the last answer kept through an outage
-        self._skills_off: tuple[float, frozenset[str]] = (0.0, frozenset())
+        self._coding_policy: tuple[float, dict | None] = (0.0, None)
 
     # ── sessions ──────────────────────────────────────────────────────────────
 
@@ -248,23 +248,56 @@ class Sidecar:
             _log.warning("axor: no Control-Plane link for %s: %s", node_id, exc)
             return None
 
-    def skills_off(self, link: Any) -> frozenset[str]:
-        """The organization's turned-off skills, asked of the plane at most
-        every POLICY_TTL seconds through a session's link."""
-        fetched, names = self._skills_off
-        if link is None or time.time() - fetched < POLICY_TTL:
-            return names
+    def _policy(self, link: Any, *, force: bool = False) -> tuple[dict | None, bool]:
+        """The organization's coding policy, asked of the plane at most every
+        POLICY_TTL seconds through a session's link: (the answer, whether it
+        was asked just now). An outage keeps the last answer."""
+        fetched, policy = self._coding_policy
+        if link is None or (not force and time.time() - fetched < POLICY_TTL):
+            return policy, False
         deliver = getattr(link, "deliver", None)
-        policy = None
+        answer = None
         if deliver is not None:
             try:
-                policy = deliver(lambda: link.connector.get_coding_policy(), 3.0)
+                answer = deliver(lambda: link.connector.get_coding_policy(), 3.0)
             except Exception:  # noqa: BLE001 - an outage keeps the last answer
-                policy = None
-        if isinstance(policy, dict) and isinstance(policy.get("skills_off"), list):
-            names = frozenset(str(x) for x in policy["skills_off"])
-        self._skills_off = (time.time(), names)
-        return names
+                answer = None
+        if isinstance(answer, dict):
+            policy = answer
+        self._coding_policy = (time.time(), policy)
+        return policy, True
+
+    def skills_off(self, link: Any, agent: str = "") -> frozenset[str]:
+        """The organization's turned-off skills. A fresh answer also brings the
+        skills turned on for the team up to date on this machine."""
+        policy, fresh = self._policy(link)
+        if fresh and agent:
+            self._team_sync(link, agent, policy, wait=False)
+        names = policy.get("skills_off") if isinstance(policy, dict) else None
+        return frozenset(str(x) for x in names) if isinstance(names, list) else frozenset()
+
+    def _team_sync(self, link: Any, agent: str, policy: dict | None, *, wait: bool) -> None:
+        """Install the skills turned on for the team, at the version the plane
+        names, and remove the ones turned back off (team_skills)."""
+        wanted = team_skills.wanted_from(policy)
+        if link is None or wanted is None or not team_skills.enabled():
+            return
+        to_install, to_remove, _own = team_skills.plan(agent, wanted)
+        for name in to_remove:
+            team_skills.remove(agent, name)
+        if not to_install:
+            return
+
+        async def fetch_and_install() -> None:
+            for name in to_install:
+                bundle = await link.connector.get_skill_bundle(name)
+                if isinstance(bundle, dict) and bundle.get("version") == wanted[name]:
+                    team_skills.install(agent, bundle)
+
+        if wait and getattr(link, "deliver", None) is not None:
+            link.deliver(fetch_and_install, 10.0)
+        else:
+            link.submit(fetch_and_install)
 
     def _ship(self, session: _Session, extra: list[dict] | None = None) -> None:
         link = session.link
@@ -290,6 +323,7 @@ class Sidecar:
                 "prompt": self._prompt,
                 "stop": self._stop,
                 "session_end": self._session_end,
+                "session_start": self._session_start,
             }.get(event.kind)
             return handler(session, event) if handler else {"allow": True}
 
@@ -317,7 +351,7 @@ class Sidecar:
                                   f"the call budget set from the Control Plane ({cap}) "
                                   "is spent", "budget")
         tool, args = taxonomy.canonical(event.agent, event.tool, event.tool_input)
-        off = self.skills_off(link) | rules.local_skills_off(self.root)
+        off = self.skills_off(link, session.agent) | rules.local_skills_off(self.root)
         skill = rules.skill_refusal(tool, args, off)
         if skill is not None and self.enforce:
             return self._deny(session, event, skill, "capability")
@@ -422,6 +456,12 @@ class Sidecar:
         answer = event.last_message or (
             last_assistant_text(event.transcript_path) if event.transcript_path else "")
         self._finish(session, answer)
+        return {"allow": True}
+
+    def _session_start(self, session: _Session, event: HookEvent) -> dict:
+        """A new session: bring the team's skills up to date before it starts."""
+        policy, _ = self._policy(session.link, force=True)
+        self._team_sync(session.link, session.agent, policy, wait=True)
         return {"allow": True}
 
     def _session_end(self, session: _Session, event: HookEvent) -> dict:

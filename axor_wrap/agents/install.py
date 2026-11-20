@@ -24,8 +24,10 @@ def events_for(agent: str) -> tuple[str, ...]:
     """The hook events an agent is given. Claude Code reports a failed call —
     a non-zero exit, a tool error — as PostToolUseFailure, not PostToolUse:
     without it a failing test run was never recorded at all. Codex runs its
-    PostToolUse after a non-zero exit too, and has no such event."""
-    return EVENTS + ("PostToolUseFailure",) if agent == "claude-code" else EVENTS
+    PostToolUse after a non-zero exit too, and has no such event. SessionStart
+    brings the skills turned on for the team up to date before a session's
+    first prompt; elsewhere the first tool call does it."""
+    return EVENTS + ("PostToolUseFailure", "SessionStart") if agent == "claude-code" else EVENTS
 _MARK = "axor_wrap.cli hook"
 
 

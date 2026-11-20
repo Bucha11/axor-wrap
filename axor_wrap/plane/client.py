@@ -227,6 +227,47 @@ class PlaneClient:
             return None
         return body if isinstance(body, dict) else None
 
+    async def get_skill_bundle(self, name: str) -> dict | None:
+        """A skill turned on for the team: ``{name, version, files}``, or None
+        when the plane cannot be asked or it is not on."""
+        from urllib.parse import quote
+
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    f"{self._base}/v1/coding/skill-bundles/{quote(name, safe='')}",
+                    headers=self._auth())
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 300:
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        return body if isinstance(body, dict) else None
+
+    async def post_skill_bundle(self, name: str, files: list[dict]) -> dict:
+        """Upload a skill's files for the team to turn on: the plane's answer
+        (``{name, version, check}``), or ``{"error": ...}``."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(f"{self._base}/v1/coding/skill-bundles",
+                                             json={"name": name, "files": files},
+                                             headers=self._auth())
+        except httpx.HTTPError as exc:
+            return {"error": f"the plane cannot be reached: {exc}"}
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if response.status_code >= 300:
+            return {"error": str(body.get("detail") if isinstance(body, dict) else "")
+                    or f"HTTP {response.status_code}"}
+        return body if isinstance(body, dict) else {"error": "an unexpected answer"}
+
     async def post_tree(self, snapshot: dict) -> bool:
         """POST a tree run's snapshot to ``/v1/trees/{tree_run}`` — this node
         IS the tree run. Replaced on the plane each time. Best-effort: False
