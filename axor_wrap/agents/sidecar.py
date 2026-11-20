@@ -322,11 +322,15 @@ class Sidecar:
             memory = deliver(lambda: link.connector.get_memory(repo), 3.0)
         except Exception:  # noqa: BLE001 - a plane outage never stops the agent
             memory = None
-        text = str((memory or {}).get("text") or "")
-        ids = [i for i in (memory or {}).get("ids") or [] if isinstance(i, int)]
+        if not isinstance(memory, dict):
+            return answer
+        text = str(memory.get("text") or "")
+        ids = [i for i in memory.get("ids") or [] if isinstance(i, int)]
+        # given nothing is reported too: the plane compares the sessions
+        # before the memory's first fact with those after it
+        link.submit(lambda: link.connector.post_memory_given(repo, ids))
         if not text:
             return answer
-        link.submit(lambda: link.connector.post_memory_given(repo, ids))
         prior = answer.get("note")
         return {**answer, "note": f"{text}\n\n{prior}" if prior else text}
 

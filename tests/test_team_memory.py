@@ -125,7 +125,8 @@ def test_no_memory_or_an_opt_out_gives_nothing(monkeypatch) -> None:
     link = MemoryLink({"text": "", "ids": []})
     car = Sidecar("/repo", enforce=True, link_factory=lambda n: link)
     start = ev("claude-code", "SessionStart")
-    assert render_decision(start, car.handle(start))[0] == "" and link.given == []
+    assert render_decision(start, car.handle(start))[0] == ""
+    assert link.given == [(car.repo, [])]          # given nothing: still a session to compare
     monkeypatch.setenv("AXOR_TEAM_MEMORY", "0")
     link2 = MemoryLink(MEMORY)
     car2 = Sidecar("/repo", enforce=True, link_factory=lambda n: link2)
