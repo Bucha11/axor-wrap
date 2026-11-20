@@ -264,6 +264,19 @@ A developer's own skill of the same name is never overwritten.
 `AXOR_TEAM_SKILLS=0` opts a machine out. A shared skill is governed like any
 other: the rules above still apply to what it asks the agent to do.
 
+### The team's memory
+
+What the team's agents verifiably learned in a repository — how to run its
+tests, which command fails there and which works, notes people wrote — is
+given to every agent at the start of its next session there: Claude Code on
+`SessionStart`, Codex with its first prompt, as `additionalContext`, once per
+session. The sidecar names the repository in the session's profile (a hash of
+the normalized `origin` remote, so every clone is one repository; the label is
+`owner/name`) and ships, with each call, the outside sources its arguments
+carry (`carries`: web, mcp, …) — the Control Plane learns only from check
+commands that passed, and never one something outside wrote.
+`AXOR_TEAM_MEMORY=0` keeps it out of one machine's agents.
+
 ### Pair sessions: notes from people watching
 
 A developer can start a pair on their session in the Control Plane (Agents →

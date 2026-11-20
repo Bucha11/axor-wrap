@@ -35,6 +35,12 @@ def enabled() -> bool:
     return os.environ.get(ENV_OPT_OUT, "1").lower() not in ("0", "off", "false", "no")
 
 
+def enabled_memory() -> bool:
+    """``AXOR_TEAM_MEMORY=0`` keeps the team's memory out of this machine's
+    agents."""
+    return os.environ.get("AXOR_TEAM_MEMORY", "1").lower() not in ("0", "off", "false", "no")
+
+
 def skills_dir(agent: str) -> Path:
     """The agent's personal skills folder."""
     home = Path(os.environ.get("HOME") or Path.home())

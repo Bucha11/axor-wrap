@@ -345,12 +345,27 @@ class PlaneConnector:
         assert self._client is not None
         return await self._client.post_ingest(events, run_id, scenario)
 
-    async def post_profile(self, kind: str, agent: str = "", developer: str = "") -> bool:
+    async def post_profile(self, kind: str, agent: str = "", developer: str = "",
+                           repo: str = "", repo_label: str = "") -> bool:
         """What this node is (axor_wrap.plane.client.PlaneClient.post_profile)."""
         if self._client is None:
             self.connect()
         assert self._client is not None
-        return await self._client.post_profile(kind, agent, developer)
+        return await self._client.post_profile(kind, agent, developer, repo, repo_label)
+
+    async def get_memory(self, repo: str) -> dict | None:
+        """The team's memory for a repository (PlaneClient.get_memory)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.get_memory(repo)
+
+    async def post_memory_given(self, repo: str, ids: list[int]) -> bool:
+        """(PlaneClient.post_memory_given)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.post_memory_given(repo, ids)
 
     async def get_coding_policy(self) -> dict | None:
         """The organization's coding policy (PlaneClient.get_coding_policy)."""

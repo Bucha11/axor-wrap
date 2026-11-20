@@ -109,11 +109,11 @@ def render_decision(event: HookEvent, decision: dict) -> tuple[str, int]:
             # kernel would have refused it
             return json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse", "additionalContext": note}}), 0
-        if event.kind in ("post_tool", "prompt") and note:
+        if event.kind in ("post_tool", "prompt", "session_start") and note:
             # a note from a pair session, given beside the tool result or the
             # prompt (both Claude Code and Codex take additionalContext there)
-            name = event.hook or ("PostToolUse" if event.kind == "post_tool"
-                                  else "UserPromptSubmit")
+            name = event.hook or {"post_tool": "PostToolUse", "prompt": "UserPromptSubmit",
+                                  "session_start": "SessionStart"}[event.kind]
             return json.dumps({"hookSpecificOutput": {
                 "hookEventName": name, "additionalContext": note}}), 0
         return "", 0

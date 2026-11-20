@@ -85,6 +85,10 @@ class ToolRecord:
     # a check command (tests, build, lint, typecheck) and what it found
     # (axor_wrap.agents.checks) — the plane holds the agent's last word to it
     check: dict | None = None
+    # outside sources its arguments carry text from (web, mcp, …), as the
+    # taint ledger saw them when it was admitted — the plane never remembers
+    # a command for the team that something outside wrote
+    carries: list = field(default_factory=list)
 
 
 @dataclass
@@ -159,6 +163,8 @@ class RunRecorder:
                     call["arg_provenance"] = "substring"
                 if rec.would_deny:
                     call["would_deny"] = dict(rec.would_deny)
+                if rec.carries:
+                    call["carries"] = list(rec.carries)
                 line: dict = {"kind": "tool_call", "payload": call}
                 if rec.status == "denied":
                     line.update(verdict="deny", gate=rec.gate or "budget")
@@ -183,6 +189,7 @@ class RunRecorder:
                              else [taint_source(rec.args)], "sensitive": False},
                     "preview": rec.result[:120],
                     **({"check": dict(rec.check)} if rec.check else {}),
+                    **({"carries": list(rec.carries)} if rec.carries else {}),
                 },
             })
         return lines

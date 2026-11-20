@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from axor_wrap.agents import checks, rules, taxonomy, team_skills
+from axor_wrap.agents.repo import repo_identity
 from axor_wrap.agents.events import HookEvent
 
 _log = logging.getLogger("axor.wrap.agents.sidecar")
@@ -161,6 +162,7 @@ class _Session:
     sources: set = field(default_factory=set)
     last_seen: float = field(default_factory=time.time)
     notes_asked: float = 0.0       # when the plane was last asked for pair notes
+    memory_given: bool = False     # the team's memory was given to this session
 
 
 class Sidecar:
@@ -186,6 +188,7 @@ class Sidecar:
         # ONE ledger for every agent in the workspace
         self.taint = TaintEngine()
         self.developer = developer_id(root)
+        self.repo, self.repo_label = repo_identity(root)
         self.sessions: dict[str, _Session] = {}
         self.by_node: dict[str, _Session] = {}
         self.last_event = time.time()
@@ -233,7 +236,8 @@ class Sidecar:
         session.link = self._open_link(node_id)
         if session.link is not None and self._link_factory is None:
             link, agent, dev = session.link, event.agent, self.developer
-            link.submit(lambda: link.connector.post_profile("coding", agent, dev))
+            repo, label = self.repo, self.repo_label
+            link.submit(lambda: link.connector.post_profile("coding", agent, dev, repo, label))
         self.sessions[key] = session
         self.by_node[node_id] = session
         return session
@@ -301,6 +305,30 @@ class Sidecar:
             link.deliver(fetch_and_install, 10.0)
         else:
             link.submit(fetch_and_install)
+
+    def _with_memory(self, session: _Session, event: HookEvent, answer: dict) -> dict:
+        """Once per session — at its start, or its first prompt where the agent
+        has no SessionStart hook — what the team's agents verifiably learned
+        in this repository (the plane renders the text)."""
+        link = session.link
+        if session.memory_given or link is None or not team_skills.enabled_memory():
+            return answer
+        session.memory_given = True
+        deliver = getattr(link, "deliver", None)
+        if deliver is None:
+            return answer
+        repo = self.repo
+        try:
+            memory = deliver(lambda: link.connector.get_memory(repo), 3.0)
+        except Exception:  # noqa: BLE001 - a plane outage never stops the agent
+            memory = None
+        text = str((memory or {}).get("text") or "")
+        ids = [i for i in (memory or {}).get("ids") or [] if isinstance(i, int)]
+        if not text:
+            return answer
+        link.submit(lambda: link.connector.post_memory_given(repo, ids))
+        prior = answer.get("note")
+        return {**answer, "note": f"{text}\n\n{prior}" if prior else text}
 
     def _with_notes(self, session: _Session, event: HookEvent, answer: dict) -> dict:
         """Give the agent the notes a pair session sent it, beside this tool
@@ -370,6 +398,8 @@ class Sidecar:
                 "session_start": self._session_start,
             }.get(event.kind)
             answer = handler(session, event) if handler else {"allow": True}
+            if event.kind in ("session_start", "prompt"):
+                answer = self._with_memory(session, event, answer)
             if event.kind in ("post_tool", "prompt"):
                 answer = self._with_notes(session, event, answer)
             return answer
@@ -436,6 +466,11 @@ class Sidecar:
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)
         record.started = True
         record.would_deny = would
+        try:
+            carried = self.taint.derive_carried(args)
+            record.carries = sorted(getattr(s, "value", str(s)) for s in carried.sources)
+        except Exception:  # noqa: BLE001 - provenance is best-effort, never a refusal
+            record.carries = []
         session.pending[event.tool_use_id or f"{event.tool}:{len(session.pending)}"] = (
             decision, record, tool, args)
         self._ship(session)
@@ -506,7 +541,8 @@ class Sidecar:
         return {"allow": True}
 
     def _session_start(self, session: _Session, event: HookEvent) -> dict:
-        """A new session: bring the team's skills up to date before it starts."""
+        """A new session: bring the team's skills up to date before it starts
+        (the team's memory is added by :meth:`_with_memory`)."""
         policy, _ = self._policy(session.link, force=True)
         self._team_sync(session.link, session.agent, policy, wait=True)
         return {"allow": True}

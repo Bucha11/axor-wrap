@@ -193,7 +193,8 @@ class PlaneClient:
             response.raise_for_status()
             return response.json()
 
-    async def post_profile(self, kind: str, agent: str = "", developer: str = "") -> bool:
+    async def post_profile(self, kind: str, agent: str = "", developer: str = "",
+                           repo: str = "", repo_label: str = "") -> bool:
         """Say what this node is — ``agent`` (production), ``coding`` (a coding
         agent session) or ``tree`` (a tree run) — once. The plane meters coding
         sessions by developer instead of counting them as governed nodes."""
@@ -202,7 +203,8 @@ class PlaneClient:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.post(
                     f"{self._base}/v1/plane/{self.session.node_id}/profile",
-                    json={"kind": kind, "agent": agent, "developer": developer},
+                    json={"kind": kind, "agent": agent, "developer": developer,
+                          **({"repo": repo, "repo_label": repo_label} if repo else {})},
                     headers=self._auth(),
                 )
         except httpx.HTTPError:
@@ -247,6 +249,41 @@ class PlaneClient:
         except ValueError:
             return None
         return body if isinstance(body, dict) else None
+
+    async def get_memory(self, repo: str) -> dict | None:
+        """What the team's agents verifiably learned in this repository, as
+        the plane renders it for an agent: ``{"text", "ids"}``; None when the
+        plane cannot be asked."""
+        from urllib.parse import quote
+
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    f"{self._base}/v1/coding/memory?repo={quote(repo, safe='')}",
+                    headers=self._auth())
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 300:
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        return body if isinstance(body, dict) else None
+
+    async def post_memory_given(self, repo: str, ids: list[int]) -> bool:
+        """Tell the plane which memory items this session's agent was given."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._base}/v1/coding/memory/given",
+                    json={"node_id": self.session.node_id, "repo": repo, "ids": ids},
+                    headers=self._auth())
+        except httpx.HTTPError:
+            return False
+        return response.status_code < 300
 
     async def get_notes(self) -> list[dict] | None:
         """Notes a pair session sent this node's agent, not yet given; None
