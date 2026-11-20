@@ -248,6 +248,36 @@ class PlaneClient:
             return None
         return body if isinstance(body, dict) else None
 
+    async def get_notes(self) -> list[dict] | None:
+        """Notes a pair session sent this node's agent, not yet given; None
+        when the plane cannot be asked."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    f"{self._base}/v1/coding/notes/{self.session.node_id}", headers=self._auth())
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 300:
+            return None
+        try:
+            notes = response.json().get("notes")
+        except (ValueError, AttributeError):
+            return None
+        return [n for n in notes if isinstance(n, dict)] if isinstance(notes, list) else None
+
+    async def post_notes_delivered(self, ids: list[int], at: str) -> bool:
+        """Tell the plane these notes were given to the agent, and where."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._base}/v1/coding/notes/{self.session.node_id}/delivered",
+                    json={"ids": ids, "at": at}, headers=self._auth())
+        except httpx.HTTPError:
+            return False
+        return response.status_code < 300
+
     async def post_skill_bundle(self, name: str, files: list[dict]) -> dict:
         """Upload a skill's files for the team to turn on: the plane's answer
         (``{name, version, check}``), or ``{"error": ...}``."""

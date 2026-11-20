@@ -152,5 +152,5 @@ def test_the_connector_a_real_sidecar_holds_can_fetch_a_bundle() -> None:
     from axor_wrap.connect import PlaneConnector
     from axor_wrap.plane.client import PlaneClient
 
-    for name in ("get_coding_policy", "get_skill_bundle"):
+    for name in ("get_coding_policy", "get_skill_bundle", "get_notes", "post_notes_delivered"):
         assert callable(getattr(PlaneConnector, name)) and callable(getattr(PlaneClient, name))

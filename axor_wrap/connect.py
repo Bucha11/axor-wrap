@@ -366,6 +366,20 @@ class PlaneConnector:
         assert self._client is not None
         return await self._client.get_skill_bundle(name)
 
+    async def get_notes(self) -> list[dict] | None:
+        """Notes from a pair session (PlaneClient.get_notes)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.get_notes()
+
+    async def post_notes_delivered(self, ids: list[int], at: str) -> bool:
+        """(PlaneClient.post_notes_delivered)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.post_notes_delivered(ids, at)
+
     async def post_tree(self, snapshot: dict) -> bool:
         """A tree run's snapshot (axor_wrap.agents.tree), under this node."""
         if self._client is None:

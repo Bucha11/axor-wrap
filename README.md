@@ -264,6 +264,20 @@ A developer's own skill of the same name is never overwritten.
 `AXOR_TEAM_SKILLS=0` opts a machine out. A shared skill is governed like any
 other: the rules above still apply to what it asks the agent to do.
 
+### Pair sessions: notes from people watching
+
+A developer can start a pair on their session in the Control Plane (Agents →
+pair sessions) and send the link: teammates — and, on a paid plan, people from
+outside the team — watch the session's steps live and can write the agent a
+note. The sidecar asks the plane for notes at most every 3 s
+(`AXOR_NOTES_TTL`) and gives them to the agent beside the next tool result
+(`PostToolUse` / `PostToolUseFailure`) or with the next prompt
+(`UserPromptSubmit`), as `additionalContext`, then tells the plane where — the
+pair sees the note land. A teammate's note is taken as the developer's own
+words. A note from outside the team is outside text: anything the agent builds
+from it meets the same rules as what came from a web page (a command driven by
+it is refused).
+
 ### Skills, before you install one
 
 A skill (a folder with `SKILL.md`, often scripts beside it) is read by the

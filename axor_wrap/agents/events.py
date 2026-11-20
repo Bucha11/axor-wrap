@@ -51,6 +51,7 @@ class HookEvent:
     tree_run: str = ""
     role: str = ""
     access: str = ""            # "read" = a read-only node of a tree
+    hook: str = ""              # the agent's own event name (PostToolUseFailure, …)
 
     def to_wire(self) -> dict:
         return dict(self.__dict__)
@@ -93,6 +94,7 @@ def parse_event(agent: str, raw: str | dict, env: dict | None = None) -> HookEve
         tree_run=env.get("AXOR_TREE_RUN", ""),
         role=env.get("AXOR_ROLE", ""),
         access=env.get("AXOR_ACCESS", ""),
+        hook=str(data.get("hook_event_name") or ""),
     )
 
 
@@ -107,6 +109,13 @@ def render_decision(event: HookEvent, decision: dict) -> tuple[str, int]:
             # kernel would have refused it
             return json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse", "additionalContext": note}}), 0
+        if event.kind in ("post_tool", "prompt") and note:
+            # a note from a pair session, given beside the tool result or the
+            # prompt (both Claude Code and Codex take additionalContext there)
+            name = event.hook or ("PostToolUse" if event.kind == "post_tool"
+                                  else "UserPromptSubmit")
+            return json.dumps({"hookSpecificOutput": {
+                "hookEventName": name, "additionalContext": note}}), 0
         return "", 0
     return json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",

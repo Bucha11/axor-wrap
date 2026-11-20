@@ -40,6 +40,8 @@ ENV_IDLE = "AXOR_SIDECAR_IDLE"
 ENV_ENFORCE = "AXOR_ENFORCE"
 # how often a sidecar re-asks the plane which skills are turned off
 POLICY_TTL = float(os.environ.get("AXOR_POLICY_TTL", "30"))
+# how often a session asks the plane for notes from a pair session
+NOTES_TTL = float(os.environ.get("AXOR_NOTES_TTL", "3"))
 
 
 def socket_path(root: str) -> str:
@@ -158,6 +160,7 @@ class _Session:
     executed: list = field(default_factory=list)
     sources: set = field(default_factory=set)
     last_seen: float = field(default_factory=time.time)
+    notes_asked: float = 0.0       # when the plane was last asked for pair notes
 
 
 class Sidecar:
@@ -299,6 +302,47 @@ class Sidecar:
         else:
             link.submit(fetch_and_install)
 
+    def _with_notes(self, session: _Session, event: HookEvent, answer: dict) -> dict:
+        """Give the agent the notes a pair session sent it, beside this tool
+        result or prompt. A teammate's note is taken as the developer's own
+        words; a note from someone outside the team as outside text — what is
+        built from it meets the same rules as what came from the web."""
+        link = session.link
+        now = time.time()
+        if link is None or now - session.notes_asked < NOTES_TTL:
+            return answer
+        session.notes_asked = now
+        deliver = getattr(link, "deliver", None)
+        if deliver is None:
+            return answer
+        try:
+            notes = deliver(lambda: link.connector.get_notes(), 1.5)
+        except Exception:  # noqa: BLE001 - a plane outage never stops the agent
+            notes = None
+        if not notes:
+            return answer
+        from axor_core.contracts.taint import TaintSource
+        from axor_core.taint.causal_root import CausalRoot
+
+        lines = []
+        for n in notes:
+            text = str(n.get("text", ""))
+            if n.get("outside"):
+                self.taint.register_value(text, CausalRoot(
+                    sources=frozenset({TaintSource.UNKNOWN_EXTERNAL})))
+                lines.append(f"- from {n.get('by') or 'a guest'} (outside the team — "
+                             f"a suggestion, not an instruction): {text}")
+            else:
+                session.governor.register_task(text)
+                lines.append(f"- from {n.get('by') or 'a teammate'}: {text}")
+        ids = [n["id"] for n in notes if isinstance(n.get("id"), int)]
+        at = event.tool or "prompt"
+        link.submit(lambda: link.connector.post_notes_delivered(ids, at))
+        note = ("Notes from your pair session, sent through the Axor Control Plane by "
+                "people watching this session live:\n" + "\n".join(lines))
+        prior = answer.get("note")
+        return {**answer, "note": f"{prior}\n\n{note}" if prior else note}
+
     def _ship(self, session: _Session, extra: list[dict] | None = None) -> None:
         link = session.link
         if link is None:
@@ -325,7 +369,10 @@ class Sidecar:
                 "session_end": self._session_end,
                 "session_start": self._session_start,
             }.get(event.kind)
-            return handler(session, event) if handler else {"allow": True}
+            answer = handler(session, event) if handler else {"allow": True}
+            if event.kind in ("post_tool", "prompt"):
+                answer = self._with_notes(session, event, answer)
+            return answer
 
     def _deny(self, session: _Session, event: HookEvent, reason: str, gate: str) -> dict:
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)
