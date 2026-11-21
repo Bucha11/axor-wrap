@@ -77,6 +77,7 @@ class WrappedToolset:
         record: bool = False,
         inputs: dict[str, object] | None = None,
         node_id: str = "",
+        task: str | None = None,
     ) -> None:
         """``governor`` overrides construction (tests / custom kernels); otherwise
         the governor is built lazily-imported from axor-core with the kwargs
@@ -112,7 +113,9 @@ class WrappedToolset:
         governor emits events with no node, which is fine for a single-session
         trace built by :meth:`trace` (the document names its own trial) but not
         for a caller assembling a ``DecisionTrace`` or pushing
-        :meth:`kernel_events` for a named node."""
+        :meth:`kernel_events` for a named node.
+
+        ``task`` is what the user asked for (see :meth:`register_task`)."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
         self.policy = dict(policy) if policy else None
@@ -134,6 +137,22 @@ class WrappedToolset:
             )
         self.enforcement = enforcement
         self._recorder = SessionRecorder() if record else None
+        if task:
+            self.register_task(task)
+
+    def register_task(self, text: str) -> None:
+        """Tell the governor what the user asked for.
+
+        axor-core 0.13 defaults to context integrity: after an untrusted read, a
+        value the agent writes is untrusted unless it provably comes from a
+        trusted origin — the user's task, operator config, a trusted tool. A
+        recipient or an IBAN the user named is that origin only once the task is
+        registered; without it, every such call after a read is refused.
+        A kernel without the method (before context integrity) needs nothing.
+        """
+        register = getattr(self._governor, "register_task", None)
+        if register is not None and text:
+            register(text)
 
     def runtime_config_hash(self, kernel: str) -> str:
         """The fingerprint of the config this session ACTUALLY governed under.
@@ -294,6 +313,7 @@ def wrap_callables(
     record: bool = False,
     inputs: dict[str, object] | None = None,
     node_id: str = "",
+    task: str | None = None,
 ) -> dict[str, Callable[..., object]]:
     """Wrapped drop-in callables sharing ONE governor session.
 
@@ -311,9 +331,12 @@ def wrap_callables(
     only the callables and so gives no way to read them back: build a
     ``WrappedToolset`` and call :meth:`WrappedToolset.callables` when you want
     the trace afterwards.
+
+    ``task`` is what the user asked for: see :meth:`WrappedToolset.register_task`.
     """
     toolset = WrappedToolset(
         tools, manifests, policy=policy, governor=governor, admission=admission,
         enforcement=enforcement, record=record, inputs=inputs, node_id=node_id,
+        task=task,
     )
     return toolset.callables()
