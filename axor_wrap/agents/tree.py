@@ -440,7 +440,8 @@ def plan_check(spec: TreeSpec, plane_url: str | None, ingest_key: str | None = N
         return None
     msg = PAID_MIX.format(families=" + ".join(families))
     if not plane_url:
-        return msg + " Set AXOR_PLANE_URL (and AXOR_INGEST_KEY) to a paid workspace."
+        return msg + (" Connect this machine to a paid workspace: "
+                      "axor-wrap connect <plane address> --key <key>.")
     try:
         ent = (fetch or _fetch_entitlements)(plane_url, ingest_key)
     except Exception as exc:  # noqa: BLE001 - unreachable plane: cannot vouch

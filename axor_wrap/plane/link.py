@@ -35,6 +35,19 @@ ENV_TEST_BENCH = "AXOR_TEST_BENCH"
 _INSTALL_HINT = "pip install 'axor-wrap[plane]'"
 
 
+def _saved_key(url: str) -> str | None:
+    """The key for ``url``: the environment's, else the saved connection's —
+    only when that connection is for this same plane."""
+    from axor_wrap import connection
+
+    if os.environ.get(ENV_KEY):
+        return os.environ[ENV_KEY]
+    saved = connection.load()
+    if str(saved.get("url") or "").rstrip("/") == url.rstrip("/"):
+        return str(saved.get("key") or "") or None
+    return None
+
+
 def default_node_id(prefix: str = "agent") -> str:
     return os.environ.get(ENV_NODE) or f"{prefix}-{socket.gethostname()}"
 
@@ -75,7 +88,7 @@ class PlaneLink:
         self.node_id = node_id or default_node_id(node_prefix)
         self.connector = PlaneConnector(
             self.url, self.node_id,
-            ingest_key=ingest_key or os.environ.get(ENV_KEY) or None,
+            ingest_key=ingest_key or _saved_key(self.url),
             operator_keys=operator_keys,
             test_bench=test_bench,
             local_budget_cap=local_budget_cap,
@@ -93,7 +106,10 @@ class PlaneLink:
 
     @classmethod
     def from_env(cls, **kw: Any) -> PlaneLink | None:
-        url = os.environ.get(ENV_URL)
+        """From the environment, else the connection ``axor-wrap connect`` saved."""
+        from axor_wrap import connection
+
+        url = connection.plane_url()
         return cls(url, **kw) if url else None
 
     # ── lifecycle ─────────────────────────────────────────────────────────────

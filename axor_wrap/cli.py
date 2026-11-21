@@ -39,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
         "agents": _cmd_agents,
         "tree": _cmd_tree,
         "skill": _cmd_skill,
+        "connect": _cmd_connect,
+        "disconnect": _cmd_disconnect,
     }[args.command]
     return handler(args)
 
@@ -68,6 +70,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_lab.add_argument("--runtime-label", "--model", dest="runtime_label", required=True)
     p_lab.add_argument("--agent-ref", default=None)
     p_lab.add_argument("--control-token", default=None)
+
+    p_conn = sub.add_parser("connect", help="connect this machine to a Control Plane, once")
+    p_conn.add_argument("url", nargs="?", help="the plane's address, e.g. https://plane.useaxor.net")
+    p_conn.add_argument("--key", default=None, help="a key from the plane's Connect page")
+    sub.add_parser("disconnect", help="forget this machine's Control Plane")
 
     # coding-agent CLIs (axor_wrap.agents)
     p_hook = sub.add_parser("hook", help="hook command run by a coding-agent CLI (reads stdin)")
@@ -116,7 +123,45 @@ def _cmd_agents(args: argparse.Namespace) -> int:
         print("Codex runs new hooks only after you review and trust them: run /hooks in codex.")
     if not agent_on_path(args.agent):
         print(f"note: {args.agent} is not on PATH here")
-    print("Control Plane: set AXOR_PLANE_URL (and AXOR_INGEST_KEY) in the agent's environment.")
+    from axor_wrap import connection
+
+    url = connection.plane_url()
+    print(f"reports to {url}" if url else f"not reported anywhere yet — {NOT_CONNECTED}")
+    return EXIT_OK
+
+
+NOT_CONNECTED = ("connect this machine once: axor-wrap connect <plane address> --key <key> "
+                 "(both are on the plane's Connect page)")
+
+
+def _cmd_connect(args: argparse.Namespace) -> int:
+    from axor_wrap import connection
+
+    if not args.url:
+        url = connection.plane_url()
+        if not url:
+            print(f"not connected — {NOT_CONNECTED}")
+            return EXIT_EMPTY
+        print(f"connected to {url}" + ("" if connection.ingest_key() else " (no key)"))
+        return EXIT_OK
+    url = args.url.rstrip("/")
+    if "://" not in url:
+        url = f"https://{url}"
+    try:
+        connection.check(url, args.key)
+    except connection.ConnectError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_EMPTY
+    where = connection.save(url, args.key)
+    print(f"connected to {url} — every axor command on this machine reports there "
+          f"(saved in {where})")
+    return EXIT_OK
+
+
+def _cmd_disconnect(args: argparse.Namespace) -> int:  # noqa: ARG001
+    from axor_wrap import connection
+
+    print("disconnected" if connection.clear() else "was not connected")
     return EXIT_OK
 
 
@@ -135,7 +180,6 @@ def _print_skill_report(report: dict) -> None:
 
 
 def _cmd_skill(args: argparse.Namespace) -> int:
-    import os
 
     from axor_wrap.agents.skills import check, read_folder, try_skill
 
@@ -169,11 +213,12 @@ def _cmd_skill(args: argparse.Namespace) -> int:
         print(f"\n{args.agent} answered ({result.returncode}): {result.answer[:600]}")
         print(f"{len(calls)} tool calls · outside text read from: "
               f"{', '.join(result.report.get('sources', [])) or 'nowhere'}")
-        if os.environ.get("AXOR_PLANE_URL"):
+        from axor_wrap import connection
+
+        if connection.plane_url():
             print(f"on the Control Plane: Try a skill → {result.node_id}")
         else:
-            print("set AXOR_PLANE_URL (and AXOR_INGEST_KEY) to see the whole run, and "
-                  "what Axor would have refused, on the Control Plane")
+            print(f"to see the whole run on the Control Plane, {NOT_CONNECTED}")
         if args.keep:
             print(f"the copy it worked in: {result.workspace}")
     return EXIT_OK if result.returncode == 0 else EXIT_EMPTY
@@ -183,20 +228,21 @@ def _share_skill(path: Path, files: list[tuple[str, str]], report: dict) -> int:
     """Upload a skill folder to the Control Plane, where someone can turn it
     on for the team: every developer's sidecar then installs it."""
     import asyncio
-    import os
 
     from axor_wrap.agents.skills import skill_name
     from axor_wrap.plane.client import PlaneClient
     from axor_wrap.plane.session import PlaneSession
 
     _print_skill_report(report)
-    url = os.environ.get("AXOR_PLANE_URL")
+    from axor_wrap import connection
+
+    url = connection.plane_url()
     if not url:
-        print("error: set AXOR_PLANE_URL (and AXOR_INGEST_KEY) to share a skill", file=sys.stderr)
+        print(f"error: {NOT_CONNECTED}", file=sys.stderr)
         return EXIT_EMPTY
     name = skill_name(path)
     client = PlaneClient(url, PlaneSession(node_id="skill-share"),
-                         ingest_key=os.environ.get("AXOR_INGEST_KEY") or None)
+                         ingest_key=connection.ingest_key())
     answer = asyncio.run(client.post_skill_bundle(
         name, [{"path": p, "content": c} for p, c in files]))
     if "error" in answer:
@@ -213,7 +259,6 @@ def _share_skill(path: Path, files: list[tuple[str, str]], report: dict) -> int:
 def _cmd_tree(args: argparse.Namespace) -> int:
     import asyncio
 
-    import os
 
     from axor_wrap.agents.tree import TreeSpecError, load_tree, plan_check, run_tree
 
@@ -228,8 +273,9 @@ def _cmd_tree(args: argparse.Namespace) -> int:
               for stage in spec.stages()]
     for i, line in enumerate(stages, 1):
         print(f"stage {i}: {line}")
-    blocked = plan_check(spec, os.environ.get("AXOR_PLANE_URL") or None,
-                         os.environ.get("AXOR_INGEST_KEY") or None)
+    from axor_wrap import connection
+
+    blocked = plan_check(spec, connection.plane_url(), connection.ingest_key())
     if args.action == "check":
         if blocked:
             print(f"note: {blocked}", file=sys.stderr)
@@ -237,8 +283,7 @@ def _cmd_tree(args: argparse.Namespace) -> int:
     if blocked:
         print(f"error: {blocked}", file=sys.stderr)
         return EXIT_EMPTY
-    run = asyncio.run(run_tree(spec, str(args.workspace),
-                               plane_url=os.environ.get("AXOR_PLANE_URL") or None))
+    run = asyncio.run(run_tree(spec, str(args.workspace), plane_url=connection.plane_url()))
     print(json.dumps(run.report, indent=2, ensure_ascii=False))
     failed = [n for n, outs in run.report["nodes"].items()
               if any(o.get("status") != "ok" for o in outs)]

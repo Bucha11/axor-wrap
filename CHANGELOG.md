@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 — 2026-11-21
+
+### Added
+
+- **`axor-wrap connect <plane> --key <key>`** — connect a machine once. It
+  checks the address and the key against the plane, then saves them in
+  `~/.axor/connection.json` (readable by this user only). The sidecar,
+  `skill share`, `skill try` and `tree run` read it; nothing has to be exported
+  in a shell profile any more. `AXOR_PLANE_URL` / `AXOR_INGEST_KEY` still
+  override it. `axor-wrap connect` alone says where the machine reports;
+  `axor-wrap disconnect` forgets it.
+- Commands that need a plane say how to connect instead of naming env vars.
+
 ## 0.3.0 — 2026-11-20
 
 The first release since 0.2.1: it also carries 0.2.2, which was prepared but

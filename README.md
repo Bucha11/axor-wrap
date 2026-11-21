@@ -141,8 +141,14 @@ Both CLIs run a command before and after every tool call. Point it at axor:
 ```bash
 axor-wrap agents install claude-code     # writes .claude/settings.json hooks
 axor-wrap agents install codex           # writes .codex/hooks.json; trust it with /hooks
-export AXOR_PLANE_URL=https://cp.example  # optional: each session becomes a plane node
+axor-wrap connect https://cp.example --key ak_…   # optional, once per machine
 ```
+
+`connect` checks the address and the key against the plane and saves them in
+`~/.axor/connection.json` (this user only). Every axor command on the machine
+reads it: the sidecar, `skill share` / `skill try`, `tree run`, axor-eval's
+`--plane`. `AXOR_PLANE_URL` / `AXOR_INGEST_KEY` still override it for one run.
+`axor-wrap connect` alone says where it reports; `axor-wrap disconnect` forgets.
 
 Every hook goes to one sidecar per repository (started on first use, gone after
 30 idle minutes). It holds the kernel's per-call governor for each agent
@@ -189,8 +195,8 @@ untrusted answer, and the kernel will not let it drive the next spawn.
 
 **Plan.** A tree of one agent family (Claude Code planning, writing and
 reviewing) is free. Mixing families in one tree — Claude Code writing, Codex
-reviewing — needs a paid workspace: `tree run` asks the plane at
-`AXOR_PLANE_URL` (`/v1/license/entitlements`) and refuses a mixed tree on the
+reviewing — needs a paid workspace: `tree run` asks the connected plane
+(`/v1/license/entitlements`) and refuses a mixed tree on the
 free plan or with no plane to ask; `tree check` says so up front. Protection is
 never gated: every session's hooks deny locally whatever the plan.
 
@@ -251,7 +257,7 @@ cannot edit it.)
 
 The other way round: a skill that works for one developer, installed for all
 of them. `axor-wrap skill share ./.claude/skills/<name>` uploads the folder
-(with `AXOR_PLANE_URL` and `AXOR_INGEST_KEY` set); it reaches nobody until
+to the connected plane; it reaches nobody until
 someone turns it on for the team on the Control Plane (Skill evals → shared
 with the team). Then each sidecar — at session start (Claude Code's
 `SessionStart` hook) and with every policy refresh — installs it into the
@@ -313,8 +319,8 @@ what Axor does about it: refused (by which rule), let run, or "inside a script".
 `try` copies the repository to a temporary folder (no `.git`, `node_modules`,
 virtualenvs), installs the skill where the agent looks (`.claude/skills/<name>`,
 `.codex/skills/<name>`), and runs the agent once under the axor hooks, enforcing
-as in real work — a dry run is not how a skill's `curl | sh` gets to run. With
-`AXOR_PLANE_URL` set the session shows on the Control Plane as
+as in real work — a dry run is not how a skill's `curl | sh` gets to run. On a
+connected machine the session shows on the Control Plane as
 `skill-try.<agent>.<skill>.<id>`, its refusals with their rule. The copy is
 deleted unless `--keep`. (With `AXOR_ENFORCE=off` a session records instead of
 refusing: each call that would have been refused ships with `would_deny`.)

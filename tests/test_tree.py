@@ -214,7 +214,7 @@ def test_mixing_families_needs_a_paid_workspace() -> None:
 
     spec = parse_tree(MIXED)
     no_plane = plan_check(spec, None)
-    assert no_plane and "claude-code + codex" in no_plane and "AXOR_PLANE_URL" in no_plane
+    assert no_plane and "claude-code + codex" in no_plane and "axor-wrap connect" in no_plane
     free = plan_check(spec, "http://cp", "k", fetch=lambda *_: {"agent_families": 1})
     assert free and "Upgrade" in free
     assert plan_check(spec, "http://cp", "k", fetch=lambda *_: {"agent_families": None}) is None

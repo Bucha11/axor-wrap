@@ -183,7 +183,11 @@ class Sidecar:
         if enforce is None:
             enforce = os.environ.get(ENV_ENFORCE, "1") not in ("0", "off", "false")
         self.enforce = enforce
-        self.plane_url = plane_url if plane_url is not None else os.environ.get("AXOR_PLANE_URL")
+        if plane_url is None:
+            from axor_wrap import connection
+
+            plane_url = connection.plane_url()
+        self.plane_url = plane_url
         self._link_factory = link_factory
         # ONE ledger for every agent in the workspace
         self.taint = TaintEngine()
