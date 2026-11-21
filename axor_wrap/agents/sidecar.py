@@ -224,8 +224,17 @@ class Sidecar:
             node_id=node_id,
         )
         try:
-            governor = ToolCallGovernor(taint_engine=self.taint, **roles)
+            # workdir: the repository is the agent's workspace, so writing its own
+            # files is not "outside the workdir" (axor-core 0.13).
+            governor = ToolCallGovernor(taint_engine=self.taint, workdir=self.root, **roles)
         except TypeError:
+            governor = None
+        if governor is None:
+            try:
+                governor = ToolCallGovernor(taint_engine=self.taint, **roles)
+            except TypeError:
+                governor = None
+        if governor is None:
             # a kernel from before shared ledgers: each session keeps its own,
             # and what one agent fetched is not seen in another
             _log.warning("axor: this axor-core cannot share a taint ledger across "
