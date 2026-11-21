@@ -78,6 +78,7 @@ def toolset_for_arm(
     governor: object | None = None,
     admission: Callable[[], bool] | None = None,
     inputs: dict[str, object] | None = None,
+    task: str | None = None,
 ) -> WrappedToolset:
     """A wrapped toolset configured for the arm this trial belongs to.
 
@@ -99,15 +100,24 @@ def toolset_for_arm(
     # the ARM's policy unless the caller overrides it: an allowlist declared on
     # the condition is part of what the experiment is comparing, and dropping it
     # would run the governed arm without the control it is meant to test.
-    return WrappedToolset(
+    scenario_inputs = inputs if inputs is not None else _inputs_for(assignment, trial_unit)
+    toolset = WrappedToolset(
         tools, list(manifests), policy=policy or arm.get("policy"),  # type: ignore[arg-type]
         governor=governor, admission=admission, enforcement=enforcement_of(arm),
         # a trial exists to produce a trace; recording is not optional here
         record=True,
         # the scenario's inputs, so a `$inputs.x` allowlist expands to concrete
         # destinations rather than governing against the reference string
-        inputs=inputs if inputs is not None else _inputs_for(assignment, trial_unit),
+        inputs=scenario_inputs,
+        task=task,
     )
+    # The scenario's inputs are what the user gave — the task's values in
+    # structured form — so they are trusted origins under axor-core's context
+    # integrity. Lab's replay trusts exactly these (not the free-text task),
+    # which keeps a connected runtime's trace replayable there.
+    for value in _string_leaves(scenario_inputs):
+        toolset.register_task(value)
+    return toolset
 
 
 def _inputs_for(assignment: dict[str, object], trial_unit: str) -> dict[str, object]:
@@ -117,6 +127,16 @@ def _inputs_for(assignment: dict[str, object], trial_unit: str) -> dict[str, obj
         if str(scenario.get("name")) == scenario_id:  # type: ignore[union-attr]
             return dict(scenario.get("inputs") or {})  # type: ignore[union-attr]
     return {}
+
+
+def _string_leaves(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _string_leaves(v)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _string_leaves(v)]
+    return []
 
 
 def planned_trials(assignment: dict[str, object]) -> list[str]:

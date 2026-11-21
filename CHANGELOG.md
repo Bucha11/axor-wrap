@@ -18,6 +18,12 @@ never published. Needs `axor-core>=0.10.2,<0.14`.
 - The sidecar now writes into `~/.claude/skills` and `~/.codex/skills`: only
   folders carrying its marker (`.axor-team.json`), never a skill of yours with
   the same name.
+- **axor-core 0.13 defaults to context integrity.** After an untrusted read, a
+  value the agent writes is untrusted unless the user's task or the operator's
+  allowlist gave it. Pass the user's prompt: `WrappedToolset(..., task=prompt)`,
+  `wrap_callables(..., task=prompt)` or `toolset.register_task(prompt)` — or a
+  recipient the user named is refused after the first untrusted read. The
+  coding sidecar already registers every prompt.
 
 ### Added
 
@@ -41,6 +47,13 @@ never published. Needs `axor-core>=0.10.2,<0.14`.
   each call carries; at session start the agent is given the facts the team
   verified for that repository, and the plane is told what was given — even
   when it was nothing.
+- **`WrappedToolset(task=…)`, `register_task`**, and `task=` on
+  `wrap_callables` and `toolset_for_arm`: the user's task is a trusted origin
+  under axor-core's context integrity. `toolset_for_arm` also trusts the
+  scenario's inputs, exactly what Lab's replay trusts.
+- **The sidecar gives the governor the repository as its workspace**
+  (axor-core 0.13 `workdir`), so after a web read the agent can still edit its
+  own files; only writes outside the repository are integrity sinks.
 - **observe**: an admitted call ships before its result; a failed call is
   recorded; `timeout` and `empty_result` do not taint the answer; a
   `silent_fail` result carries no untrusted source.
