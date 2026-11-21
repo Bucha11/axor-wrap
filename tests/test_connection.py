@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import http.server
+import json
 import stat
 import threading
 from collections.abc import Iterator
@@ -94,3 +95,22 @@ def test_sharing_a_skill_unconnected_says_how_to_connect(home: Path, capsys: pyt
     (skill / "SKILL.md").write_text("---\nname: s\ndescription: d\n---\nhi\n")
     assert main(["skill", "share", str(skill)]) != 0
     assert "axor-wrap connect" in capsys.readouterr().err
+
+
+def test_a_revoked_key_is_said_by_connect_and_at_session_start(
+        plane: str, home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from axor_wrap.agents.events import parse_event, render_decision
+    from axor_wrap.agents.sidecar import Sidecar
+
+    connection.save(plane, "revoked")       # the plane accepts only "good"
+    assert main(["connect"]) != 0
+    assert "refused this key" in capsys.readouterr().out
+    car = Sidecar(str(home), enforce=True)
+    car._open_link = lambda node_id: None   # no telemetry in this test
+    ev = parse_event("claude-code", {"hook_event_name": "SessionStart", "session_id": "s1",
+                                     "cwd": str(home)})
+    out, code = render_decision(ev, car.handle(ev))
+    assert code == 0 and "refuses this machine's key" in json.loads(out)["systemMessage"]
+    connection.save(plane, "good")
+    out, _ = render_decision(ev, car.handle(ev))
+    assert "systemMessage" not in (json.loads(out) if out else {})

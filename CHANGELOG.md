@@ -12,6 +12,14 @@
   override it. `axor-wrap connect` alone says where the machine reports;
   `axor-wrap disconnect` forgets it.
 - Commands that need a plane say how to connect instead of naming env vars.
+- **Only what came from outside ships as outside text.** A tool result's
+  source is the kernel's answer (`output_root_of`, or the same arming map on
+  axor-core 0.13.0), not a guess from its arguments: a local command's output
+  or the answer to a write no longer shows on the plane as text from outside.
+- **A developer hears when their machine stops reporting.** `axor-wrap
+  connect` checks the key with the plane; at session start, a key the plane
+  refuses (the developer was removed, or the key revoked) is said to the person
+  in Claude Code (`systemMessage`). The session stays protected locally.
 
 ## 0.3.0 — 2026-11-20
 

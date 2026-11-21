@@ -345,3 +345,20 @@ def test_a_skill_turned_off_on_the_plane_is_refused(monkeypatch) -> None:
     link.policy = None
     monkeypatch.setattr("axor_wrap.agents.sidecar.POLICY_TTL", 0.0)
     assert car.handle(pre("claude-code", "Skill", {"skill": "test-first"}, tid="t4"))["allow"] is False
+
+
+def test_only_what_came_from_outside_ships_as_outside_text(car, links) -> None:
+    """A local command's output, or the answer to a write, is no text from
+    outside: the result ships with the kernel's own answer, not a guess from
+    its arguments."""
+    car.handle(pre("claude-code", "Bash", {"command": "pytest -q"}, tid="b1"))
+    car.handle(post("claude-code", "Bash", {"command": "pytest -q"}, {"stdout": "1 passed"}, tid="b1"))
+    w = {"file_path": "/repo/test_app.py", "content": "x"}
+    car.handle(pre("claude-code", "Write", w, tid="w1"))
+    car.handle(post("claude-code", "Write", w, {"ok": True}, tid="w1"))
+    f = {"url": "https://docs.example/setup", "prompt": "read"}
+    car.handle(pre("claude-code", "WebFetch", f, tid="f1"))
+    car.handle(post("claude-code", "WebFetch", f, PAGE, tid="f1"))
+    roots = {ln["payload"]["tool"]: ln["payload"]["root"]["sources"]
+             for ln in lines_of(next(iter(links.values()))) if ln.get("kind") == "tool_result"}
+    assert roots == {"Bash": [], "Write": [], "WebFetch": ["web"]}

@@ -517,6 +517,7 @@ class Sidecar:
                 roots = frozenset(names.get(x, TaintSource.CHILD_AGENT) for x in sources) \
                     or frozenset({TaintSource.CHILD_AGENT})
                 self.taint.register_value(output, CausalRoot(sources=roots))
+                record.sources = sorted(getattr(r, "value", str(r)) for r in roots)
                 session.sources.update(x if x in names else "child_agent"
                                        for x in (sources or ["child_agent"]))
             else:
@@ -539,6 +540,8 @@ class Sidecar:
                 str(args.get("command", "")), raw,
                 failed=status == "error" or (isinstance(code, int) and code != 0),
                 interrupted=bool(response.get("interrupted")))
+        if record.sources is None:
+            record.sources = _result_sources(session.governor, decision)
         session.recorder.end_tool(record, output, status=status)
         self._ship(session)
         return {"allow": True}
@@ -562,7 +565,29 @@ class Sidecar:
         (the team's memory is added by :meth:`_with_memory`)."""
         policy, _ = self._policy(session.link, force=True)
         self._team_sync(session.link, session.agent, policy, wait=True)
+        refused = self._plane_refuses()
+        if refused:
+            return {"allow": True, "user_message": refused}
         return {"allow": True}
+
+    def _plane_refuses(self) -> str | None:
+        """Whether the plane refuses this machine's key — the developer was
+        taken off the workspace, or their key revoked. Asked once per session
+        start, and said to the person: the agent is still governed here, but
+        nothing of it reaches the plane any more."""
+        if not self.plane_url or self._link_factory is not None:
+            return None
+        from axor_wrap import connection
+
+        try:
+            connection.check(self.plane_url, connection.ingest_key(), timeout=3.0)
+        except connection.ConnectError as exc:
+            if "refused this key" not in str(exc):
+                return None   # an outage is not news; a refused key is
+            return ("Axor: the Control Plane refuses this machine's key — your workspace "
+                    "removed it. This session is still protected here, but it does not "
+                    "report. Ask your admin, or connect again: axor-wrap connect <plane> --key <key>.")
+        return None
 
     def _session_end(self, session: _Session, event: HookEvent) -> dict:
         self._finish(session, event.last_message)
@@ -661,3 +686,25 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _result_sources(governor: Any, decision: Any) -> list[str] | None:  # noqa: ANN401
+    """Where a result came from, as the kernel registers it: a local command's
+    output or a file the agent wrote is no "text from outside". None when this
+    kernel cannot say: the arguments decide then."""
+    root_of = getattr(governor, "output_root_of", None)
+    try:
+        if root_of is not None:
+            root = root_of(decision)
+        else:
+            # axor-core 0.13.0: the same arming map register_output applies
+            from axor_core.policy.provenance import output_root
+
+            ni = getattr(decision, "_normalized", None)
+            root = output_root(
+                ni.tool if ni is not None else "", ni,
+                untrusted_sources=governor._untrusted_sources,
+                sensitive_sources=governor._sensitive_sources)
+    except Exception:  # noqa: BLE001 - provenance is reporting, never a refusal
+        return None
+    return [] if root is None else sorted(getattr(s, "value", str(s)) for s in root.sources)

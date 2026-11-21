@@ -104,6 +104,17 @@ def render_decision(event: HookEvent, decision: dict) -> tuple[str, int]:
     observes, it never breaks the agent."""
     if event.kind != "pre_tool" or decision.get("allow", True):
         note = decision.get("note")
+        tell = decision.get("user_message")
+        if tell and event.agent == "claude-code":
+            # said to the PERSON, not the model: Claude Code shows a hook's
+            # systemMessage in its own UI (a warning line), and nothing else
+            # here changes — the agent goes on, governed locally
+            out: dict = {"systemMessage": tell}
+            if note and event.kind in ("post_tool", "prompt", "session_start"):
+                name = event.hook or {"post_tool": "PostToolUse", "prompt": "UserPromptSubmit",
+                                      "session_start": "SessionStart"}[event.kind]
+                out["hookSpecificOutput"] = {"hookEventName": name, "additionalContext": note}
+            return json.dumps(out), 0
         if event.kind == "pre_tool" and note:
             # a call let through in observe mode still tells the agent why the
             # kernel would have refused it

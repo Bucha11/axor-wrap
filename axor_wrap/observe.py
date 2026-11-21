@@ -78,6 +78,9 @@ class ToolRecord:
     call_sent: bool = False
     sent: bool = False         # result (or a denied call) shipped
     fault: dict | None = None
+    # where the result came from, as the kernel decided (governor.output_root_of):
+    # [] = a clean read. None = not known; the locator in the arguments decides.
+    sources: list[str] | None = None
     gate: str = ""             # the gate that denied it, when one did
     # observe-only (enforcement off): what WOULD have been refused, and why
     would_deny: dict | None = None
@@ -186,6 +189,7 @@ class RunRecorder:
                     # engine's, not anything the tool fetched: no untrusted
                     # source behind it
                     "root": {"sources": [] if (rec.fault or {}).get("mode") in _NOTHING_BACK
+                             else rec.sources if rec.sources is not None
                              else [taint_source(rec.args)], "sensitive": False},
                     "preview": rec.result[:120],
                     **({"check": dict(rec.check)} if rec.check else {}),

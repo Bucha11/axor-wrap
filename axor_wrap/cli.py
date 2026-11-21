@@ -142,7 +142,13 @@ def _cmd_connect(args: argparse.Namespace) -> int:
         if not url:
             print(f"not connected — {NOT_CONNECTED}")
             return EXIT_EMPTY
-        print(f"connected to {url}" + ("" if connection.ingest_key() else " (no key)"))
+        try:
+            connection.check(url, connection.ingest_key())
+        except connection.ConnectError as exc:
+            print(f"connected to {url}, but {exc}")
+            return EXIT_EMPTY
+        print(f"connected to {url} — the plane accepts this machine's key"
+              if connection.ingest_key() else f"connected to {url} (no key)")
         return EXIT_OK
     url = args.url.rstrip("/")
     if "://" not in url:
