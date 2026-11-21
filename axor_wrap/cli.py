@@ -168,7 +168,8 @@ def _cmd_disconnect(args: argparse.Namespace) -> int:  # noqa: ARG001
 def _print_skill_report(report: dict) -> None:
     head = report["name"] or "this skill"
     s = report["summary"]
-    print(f"{head}: {len(report['files'])} files · {s['danger']} dangerous · "
+    n = len(report["files"])
+    print(f"{head}: {n} file{'' if n == 1 else 's'} · {s['danger']} dangerous · "
           f"{s['warn']} to look at · {s['info']} other commands")
     for f in report["findings"]:
         mark = {"danger": "!!", "warn": " !", "info": "  "}[f["severity"]]
