@@ -392,6 +392,16 @@ class Sidecar:
             notes = deliver(lambda: link.connector.get_notes(), 1.5)
         except Exception:  # noqa: BLE001 - a plane outage never stops the agent
             notes = None
+        take = getattr(link.connector, "take_pair_news", None)
+        news = [str(n) for n in (take() or []) if isinstance(n, str)] if callable(take) else []
+        # said to the PERSON (not the model): who is watching this session,
+        # who asks to, and every note their agent is given — word for word
+        told = list(news) + [f"Note from {n.get('by') or 'someone'} in a pair session, given "
+                             f"to your agent: {str(n.get('text', ''))[:300]}" for n in notes or []]
+        if told:
+            prior_tell = answer.get("user_message")
+            answer = {**answer, "user_message": "\n".join(
+                ([prior_tell] if prior_tell else []) + ["Axor: " + t for t in told])}
         if not notes:
             return answer
         from axor_core.contracts.taint import TaintSource

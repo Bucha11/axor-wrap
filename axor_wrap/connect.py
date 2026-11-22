@@ -366,6 +366,14 @@ class PlaneConnector:
         it (PlaneClient.profile_answer); None until it answered."""
         return getattr(self._client, "profile_answer", None)
 
+    def take_pair_news(self) -> list[str]:
+        """What the plane said for the developer with the last notes — who
+        joined a pair, who asks to (PlaneClient.pair_news), handed over once."""
+        news = list(getattr(self._client, "pair_news", None) or [])
+        if self._client is not None:
+            self._client.pair_news = []
+        return news
+
     async def get_memory(self, repo: str) -> dict | None:
         """The team's memory for a repository (PlaneClient.get_memory)."""
         if self._client is None:

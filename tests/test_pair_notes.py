@@ -15,6 +15,7 @@ from axor_wrap.agents.sidecar import Sidecar
 class NotesLink:
     def __init__(self) -> None:
         self.notes: list[dict] = []
+        self.news: list[str] = []
         self.delivered: list[tuple[list[int], str]] = []
         self.shipped: list = []
         outer = self
@@ -22,6 +23,10 @@ class NotesLink:
         class _Conn:
             async def get_notes(self):
                 out, outer.notes = outer.notes, []
+                return out
+
+            def take_pair_news(self):
+                out, outer.news = outer.news, []
                 return out
 
             async def post_notes_delivered(self, ids, at):
@@ -129,3 +134,20 @@ def test_no_plane_no_notes(monkeypatch) -> None:
     car = Sidecar("/repo", enforce=True, link_factory=lambda n: None)
     answer = car.handle(ev("claude-code", "UserPromptSubmit", prompt="hi"))
     assert "note" not in answer
+
+
+def test_the_developer_is_told_who_joined_and_every_note_their_agent_got(setup) -> None:
+    car, link = setup
+    link.news = ["petr@acme.io joined a pair session on this session — they see your agent's steps"]
+    link.notes = [{"id": 7, "by": "petr@acme.io", "text": "keep the TTL at 14 days"}]
+    event = ev("claude-code", "UserPromptSubmit", prompt="add refresh tokens")
+    out, _ = render_decision(event, car.handle(event))
+    body = json.loads(out)
+    # the person reads it in Claude Code; the model gets the note
+    assert "petr@acme.io joined a pair session" in body["systemMessage"]
+    assert "given to your agent: keep the TTL at 14 days" in body["systemMessage"]
+    assert "keep the TTL at 14 days" in body["hookSpecificOutput"]["additionalContext"]
+    # said once
+    event = ev("claude-code", "UserPromptSubmit", prompt="go on")
+    out, _ = render_decision(event, car.handle(event))
+    assert "systemMessage" not in (json.loads(out) if out else {})

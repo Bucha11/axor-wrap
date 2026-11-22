@@ -48,6 +48,11 @@
   refuse more (`.axor/rules.json` `{"refuse": [...]}`), never allow what the
   team refuses; without a team policy, the repository's own `allow` works as
   before. A refusal under the team's policy says an admin can allow it.
+- **A developer knows who is watching their session.** Pair sessions are by
+  invitation on the plane; the sidecar now tells the person in Claude Code
+  (`systemMessage`) who joined a pair on their session, who asks to, and every
+  note their agent was given, word for word — until now only the model saw a
+  note.
 - **Exceptions and trusted sources in the team's policy.** An admin lets one
   thing through a rule for the team — a path (`tests/fixtures/*`) or a whole
   command (`env | grep JWT`), `*` as a wildcard, matched whole and never as a

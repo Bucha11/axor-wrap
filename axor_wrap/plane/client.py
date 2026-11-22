@@ -108,6 +108,7 @@ class PlaneClient:
         self._seq = 0
         # the plane's answer to post_profile: {"locked": [...], "detail"?}
         self.profile_answer: dict | None = None
+        self.pair_news: list[str] = []
 
     def _auth(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         """Headers for one plane call: the bearer when configured, plus extras.
@@ -321,9 +322,15 @@ class PlaneClient:
         if response.status_code >= 300:
             return None
         try:
-            notes = response.json().get("notes")
+            body = response.json()
+            notes = body.get("notes")
+            news = body.get("news")
         except (ValueError, AttributeError):
             return None
+        # what the developer is told in their own agent: who joined a pair on
+        # this session, who asks to (taken by the sidecar, said once)
+        if isinstance(news, list):
+            self.pair_news = [str(n) for n in news if isinstance(n, str)]
         return [n for n in notes if isinstance(n, dict)] if isinstance(notes, list) else None
 
     async def post_notes_delivered(self, ids: list[int], at: str) -> bool:
