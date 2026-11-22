@@ -25,6 +25,16 @@
   session but does not show or operate it; its answer to the session's profile
   says so, and the sidecar tells the person once, in Claude Code.
 
+- **A skill's dangerous script is refused when the agent runs it.** A script
+  is one call to Axor; its lines are now read before it runs. A script a skill
+  ships (`.claude/skills/…`, `.codex/skills/…`) that downloads and runs code,
+  reads secrets or sends data out is refused, naming the line — a dry run
+  (`skill try`) is no longer how it gets to run. A repository that trusts its
+  skills: `.axor/rules.json` `{"allow": ["skill_scripts"]}`.
+- **Refusals in words.** A call refused because outside text drove it says
+  where the text came from and that the developer can run the command
+  themselves — not the kernel's gate sentence.
+
 ### Fixed
 
 - **Tool results reach the plane again.** The sidecar daemon runs as

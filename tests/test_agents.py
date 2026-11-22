@@ -91,7 +91,7 @@ def test_what_one_agent_fetched_is_tainted_in_the_other(car) -> None:
     # Codex, a different agent and session in the same repo
     bad = car.handle(pre("codex", "Bash", {"command": FROM_PAGE},
                          session="x9", tid="c1"))
-    assert bad["allow"] is False and "taint" in bad["reason"]
+    assert bad["allow"] is False and "came from" in bad["reason"]
     assert car.handle(pre("codex", "Bash", {"command": "pytest -q"}, session="x9",
                           tid="c2"))["allow"]
 
@@ -298,7 +298,7 @@ def test_the_home_example_is_refused_by_where_it_came_from_not_by_a_rule(links) 
     # address) or, on a core that counts a fetched package as generated code,
     # the imperative channel — never by a rule
     assert out["allow"] is False
-    assert "taint" in out["reason"] or "untrusted" in out["reason"]
+    assert "came from" in out["reason"] and "run it yourself" in out["reason"]
 
 
 class PolicyLink(FakeLink):

@@ -476,9 +476,17 @@ class Sidecar:
                 return self._deny(session, event, refusal, "capability")
         # what is refused whoever asked: a skill's curl | sh, a read of
         # ~/.aws/credentials, a force push (axor_wrap.agents.rules)
-        rule = rules.check_call(tool, args, self.root, rules.allowed_rules(self.root))
+        allowed = rules.allowed_rules(self.root)
+        rule = rules.check_call(tool, args, self.root, allowed)
         if rule is not None and self.enforce:
             return self._deny(session, event, rules.refusal(rule), "consequence")
+        if tool == "bash" and "skill_scripts" not in allowed and self.enforce:
+            # a skill's script is one call: what its lines do was read before
+            from axor_wrap.agents.skills import dangerous_script, script_refusal
+
+            found = dangerous_script(str(args.get("command", "")), event.cwd or self.root)
+            if found is not None:
+                return self._deny(session, event, script_refusal(found), "consequence")
         decision = session.governor.evaluate(tool, args)
         if skill is not None:
             note = f"axor (observe only) would deny this call: {skill}"
@@ -495,7 +503,8 @@ class Sidecar:
             except ValueError:
                 gate = "capability"
             if self.enforce:
-                return self._deny(session, event, decision.reason, gate)
+                return self._deny(session, event,
+                                  _plain_refusal(str(decision.reason), gate, args, session.sources), gate)
             note = f"axor (observe only) would deny this call: {decision.reason}"
             would = {"gate": gate, "reason": str(decision.reason)}
         else:
@@ -703,6 +712,26 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO)
     asyncio.run(serve(args.root, args.socket or socket_path(args.root)))
     return 0
+
+
+def _plain_refusal(reason: str, gate: str, args: dict, sources: set) -> str:
+    """The kernel's refusal, in the words the developer reads in their agent
+    (and on the plane): what came from where, and what to do if they meant it.
+    The kernel's own sentence for anything this does not know."""
+    where = ("a web page this session read" if "web" in sources
+             else "a tool's answer from outside" if sources else "text from outside")
+    command = str(args.get("command") or "").strip()
+    yourself = f" If you want it, run it yourself: {command}" if command else ""
+    if gate in ("carrier", "carrier_gate") or reason.startswith("carrier gate"):
+        return (f"this call follows an instruction that came from {where} — Axor does not "
+                f"run what outside text tells the agent to do.{yourself}")
+    if gate in ("taint_floor", "taint_enforcement") or reason.startswith("taint enforcement"):
+        if "confidentiality" in reason:
+            return ("this call would send out a secret this session read — "
+                    "Axor does not let read secrets leave.")
+        return (f"what this call would use came from {where} — Axor does not let outside "
+                f"text decide a command, an address or a destination.{yourself}")
+    return reason
 
 
 def _result_sources(governor: Any, decision: Any) -> list[str] | None:  # noqa: ANN401

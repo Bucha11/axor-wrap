@@ -178,6 +178,8 @@ def _commands(path: str, text: str) -> Iterable[tuple[int, str]]:
 
 
 _SCRIPTS = (".sh", ".bash", ".zsh", ".ps1", ".py", ".js", ".mjs", ".ts")
+SCRIPT_REFUSED = ("Inside a script: Axor refuses the agent's run of this script — its lines "
+                  "are read before it runs (rule skill_scripts).")
 INSIDE_A_SCRIPT = ("Inside a script: Axor sees the call that starts it (bash scripts/…), "
                    "not this line — read the script before you install the skill.")
 
@@ -188,7 +190,8 @@ def _axor_says(kind: str, where: str, snippet: str) -> str:
     if kind in ("follows_web", "pre_approves", "fetches_in_shell"):
         return _AXOR[kind]
     if path.lower().endswith(_SCRIPTS):
-        return INSIDE_A_SCRIPT
+        # the hooks read a skill's script when the agent runs it (dangerous_script)
+        return SCRIPT_REFUSED if _SEVERITY[kind] == DANGER else INSIDE_A_SCRIPT
     command = snippet.strip().strip("`").removeprefix("$").strip()
     # a sentence around a command (`cat ~/.aws/credentials` in prose)
     inline = re.findall(r"`([^`]+)`", snippet)
@@ -247,6 +250,71 @@ def check(files: Iterable[tuple[str, str]]) -> SkillReport:
                 add("runs_commands", f"{path}:{i}", cmd)
     report.findings.sort(key=lambda f: (_SEVERITY_ORDER[f.severity], f.where))
     return report
+
+
+# ── a skill's script, when an agent runs it ──────────────────────────────────
+
+_SKILL_DIRS = ("/.claude/skills/", "/.codex/skills/")
+_script_cache: dict[tuple[str, float], Finding | None] = {}
+
+
+def _script_finding(path: Path) -> Finding | None:
+    """The first dangerous line of one script, as :func:`check` reads it."""
+    try:
+        key = (str(path), path.stat().st_mtime)
+    except OSError:
+        return None
+    if key not in _script_cache:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        parts = str(path).split("/")
+        at = next((i for i in range(len(parts) - 1) if parts[i] == "skills"), -1)
+        rel = "/".join(parts[at + 1:]) if at >= 0 else path.name
+        found = [f for f in check([(rel, text)]).findings if f.severity == DANGER]
+        _script_cache[key] = found[0] if found else None
+    return _script_cache[key]
+
+
+def dangerous_script(command: str, cwd: str) -> Finding | None:
+    """A command that runs a script a skill ships (``sh .claude/skills/x/setup.sh``,
+    ``python ~/.claude/skills/x/run.py``) whose own lines download and run code,
+    read secrets, send data out… — what the agent's one call would do. None for
+    anything else: a script outside a skill folder, a skill script that is fine."""
+    import shlex
+
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    for word in words:
+        if "skills/" not in word:
+            continue
+        path = Path(os.path.expanduser(word))
+        if not path.is_absolute():
+            path = Path(cwd) / path
+        try:
+            path = path.resolve()
+        except OSError:
+            continue
+        where = str(path).replace("\\", "/")
+        if not any(d in where for d in _SKILL_DIRS) or not path.is_file():
+            continue
+        found = _script_finding(path)
+        if found is not None:
+            return found
+    return None
+
+
+def script_refusal(found: Finding) -> str:
+    """The reason the agent (and the developer) is given."""
+    rel, _, line = found.where.rpartition(":")
+    skill = rel.split("/", 1)[0]
+    return (f"this runs the {skill} skill's {rel.split('/', 1)[-1]}, which {found.what} "
+            f"(line {line}: {found.snippet[:120]}). A script is one call to Axor: its lines "
+            f"were read before it runs. Read it; if you trust it, run it yourself — or allow "
+            f'skill scripts in this repository: .axor/rules.json {{"allow": ["skill_scripts"]}}.')
 
 
 def read_folder(root: Path, *, limit_bytes: int = 512_000) -> list[tuple[str, str]]:

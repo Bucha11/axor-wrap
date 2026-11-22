@@ -261,6 +261,10 @@ RULES: dict[str, Rule] = {r.id: r for r in (
          "a recursive delete outside the repository, a force push, a disk write"),
     Rule("privilege", "asks for root",
          "a coding task does not need to become root"),
+    # not a pattern on the call: the script a skill ships is read before it
+    # runs (axor_wrap.agents.skills.dangerous_script)
+    Rule("skill_scripts", "runs a skill's script that does something dangerous",
+         "a script is one call to Axor — what it does inside is not seen line by line"),
 )}
 
 

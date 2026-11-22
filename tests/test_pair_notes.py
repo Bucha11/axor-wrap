@@ -121,7 +121,7 @@ def test_a_command_from_an_outside_guests_note_is_refused(setup, outside, allowe
                         tool_input={"command": cmd}, tool_use_id="t2"))
     assert out["allow"] is allowed
     if not allowed:
-        assert "taint" in out["reason"]
+        assert "came from" in out["reason"]
 
 
 def test_no_plane_no_notes(monkeypatch) -> None:
