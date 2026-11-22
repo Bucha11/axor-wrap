@@ -260,7 +260,7 @@ def _share_skill(path: Path, files: list[tuple[str, str]], report: dict) -> int:
         return EXIT_EMPTY
     live = answer.get("live_version")
     print(f"\nshared {name} (version {answer.get('version', '?')}) — on the Control Plane: "
-          "Skill evals → team skills.")
+          "Skills → shared with the team.")
     print("It reaches nobody until someone turns it on for the team there."
           if live != answer.get("version") else "This version is already on for the team.")
     return EXIT_OK
