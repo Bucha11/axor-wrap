@@ -41,6 +41,14 @@
 - `skill try` counts calls the way the Control Plane does: what ran and what
   was refused.
 
+- **The team's rules.** An admin decides on the Control Plane which of the
+  rules (secrets, sending out, download and run, writes outside, …) every
+  developer's agent is refused, and whether the hooks refuse or only record
+  (observe). The sidecar fetches it with the skills policy. A repository may
+  refuse more (`.axor/rules.json` `{"refuse": [...]}`), never allow what the
+  team refuses; without a team policy, the repository's own `allow` works as
+  before. A refusal under the team's policy says an admin can allow it.
+
 ### Fixed
 
 - **Tool results reach the plane again.** The sidecar daemon runs as

@@ -283,6 +283,31 @@ def allowed_rules(root: str) -> set[str]:
     return allow & set(RULES)
 
 
+def refused_rules(root: str) -> set[str]:
+    """Rules a repository refuses on top of its team's policy:
+    ``.axor/rules.json`` ``{"refuse": [...]}`` — a repository may tighten what
+    the team allows, never loosen what it refuses."""
+    path = Path(root) / ".axor" / "rules.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {str(x) for x in data.get("refuse", []) if isinstance(x, str)} & set(RULES)
+    except (OSError, ValueError, AttributeError):
+        return set()
+
+
+def team_allowed(policy: dict | None, root: str) -> tuple[set[str], str] | None:
+    """The rules allowed here under the team's policy, and its mode
+    (``enforce`` / ``observe``) — None when no admin saved one (the
+    repository's own .axor/rules.json decides then, as before)."""
+    team = policy.get("rules") if isinstance(policy, dict) else None
+    if not isinstance(team, dict) or not isinstance(team.get("allow"), list):
+        return None
+    allow = {str(x) for x in team["allow"]} & set(RULES)
+    allow.discard("agent_config")
+    mode = team.get("mode") if team.get("mode") in ("enforce", "observe") else "enforce"
+    return allow - refused_rules(root), mode
+
+
 def check_call(tool: str, args: dict, root: str, allow: set[str] | frozenset[str] = frozenset()) -> Rule | None:
     """The first rule this canonical call breaks, or None."""
     args = {k: (v if isinstance(v, str) else str(v)) for k, v in (args or {}).items()}
@@ -297,8 +322,12 @@ def check_call(tool: str, args: dict, root: str, allow: set[str] | frozenset[str
     return None
 
 
-def refusal(rule: Rule) -> str:
-    """The reason the agent is given."""
+def refusal(rule: Rule, *, team: bool = False) -> str:
+    """The reason the agent is given. Under the team's policy, allowing it is
+    an admin's decision on the Control Plane — not a file in the repository."""
+    if team:
+        return (f"this call {rule.what} — {rule.why}. Your team's policy refuses it "
+                f"(rule '{rule.id}'); an admin can allow it on the Control Plane, under Policy.")
     return (f"this call {rule.what} — {rule.why}. Refused by the axor rule "
             f"'{rule.id}'; if this repository needs it, add it to .axor/rules.json "
             f'{{"allow": ["{rule.id}"]}}.')

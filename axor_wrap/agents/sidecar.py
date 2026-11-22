@@ -470,8 +470,13 @@ class Sidecar:
                                   "is spent", "budget")
         tool, args = taxonomy.canonical(event.agent, event.tool, event.tool_input)
         off = self.skills_off(link, session.agent) | rules.local_skills_off(self.root)
+        # the team's rules, once an admin saved them: what is allowed, and
+        # whether the hooks refuse at all or only record (observe)
+        policy, _ = self._policy(link)
+        team = rules.team_allowed(policy, self.root)
+        enforce = self.enforce if team is None else team[1] == "enforce"
         skill = rules.skill_refusal(tool, args, off)
-        if skill is not None and self.enforce:
+        if skill is not None and enforce:
             return self._deny(session, event, skill, "capability")
         if event.access == "read":
             refusal = taxonomy.read_only_refusal(tool, args)
@@ -479,11 +484,13 @@ class Sidecar:
                 return self._deny(session, event, refusal, "capability")
         # what is refused whoever asked: a skill's curl | sh, a read of
         # ~/.aws/credentials, a force push (axor_wrap.agents.rules)
-        allowed = rules.allowed_rules(self.root)
+        allowed = (rules.allowed_rules(self.root) - rules.refused_rules(self.root)
+                   if team is None else team[0])
         rule = rules.check_call(tool, args, self.root, allowed)
-        if rule is not None and self.enforce:
-            return self._deny(session, event, rules.refusal(rule), "consequence")
-        if tool == "bash" and "skill_scripts" not in allowed and self.enforce:
+        if rule is not None and enforce:
+            return self._deny(session, event, rules.refusal(rule, team=team is not None),
+                              "consequence")
+        if tool == "bash" and "skill_scripts" not in allowed and enforce:
             # a skill's script is one call: what its lines do was read before
             from axor_wrap.agents.skills import dangerous_script, script_refusal
 
@@ -495,9 +502,9 @@ class Sidecar:
             note = f"axor (observe only) would deny this call: {skill}"
             would: dict | None = {"gate": "capability", "reason": skill}
         elif rule is not None:
-            note = f"axor (observe only) would deny this call: {rules.refusal(rule)}"
-            would = {"gate": "consequence", "rule": rule.id,
-                                  "reason": rules.refusal(rule)}
+            said = rules.refusal(rule, team=team is not None)
+            note = f"axor (observe only) would deny this call: {said}"
+            would = {"gate": "consequence", "rule": rule.id, "reason": said}
         elif not decision.allowed:
             from axor_core.governor import gate_of
 
@@ -505,7 +512,7 @@ class Sidecar:
                 gate = gate_of(decision.category)
             except ValueError:
                 gate = "capability"
-            if self.enforce:
+            if enforce:
                 return self._deny(session, event,
                                   _plain_refusal(str(decision.reason), gate, args, session.sources), gate)
             note = f"axor (observe only) would deny this call: {decision.reason}"
