@@ -154,6 +154,7 @@ class _Session:
     governor: Any
     recorder: Any
     link: Any = None
+    taint: Any = None              # its engine: the shared ledger, its own context
     pending: dict = field(default_factory=dict)   # tool_use_id → (decision, record)
     calls: int = 0
     # what actually ran, in the kernel's vocabulary (for a tree's findings
@@ -192,7 +193,10 @@ class Sidecar:
             plane_url = connection.plane_url()
         self.plane_url = plane_url
         self._link_factory = link_factory
-        # ONE ledger for every agent in the workspace
+        # ONE ledger for every agent in the workspace: a value one agent fetched
+        # is the same value in another's call. What a session's MODEL was shown
+        # (the context root, its trusted values, its outstanding secrets) is its
+        # own — see _session_taint.
         self.taint = TaintEngine()
         self.developer = developer_id(root)
         self.repo, self.repo_label = repo_identity(root)
@@ -230,15 +234,16 @@ class Sidecar:
             driving_args=taxonomy.DRIVING_ARGS,
             node_id=node_id,
         )
+        taint = self._session_taint()
         try:
             # workdir: the repository is the agent's workspace, so writing its own
             # files is not "outside the workdir" (axor-core 0.13).
-            governor = ToolCallGovernor(taint_engine=self.taint, workdir=self.root, **roles)
+            governor = ToolCallGovernor(taint_engine=taint, workdir=self.root, **roles)
         except TypeError:
             governor = None
         if governor is None:
             try:
-                governor = ToolCallGovernor(taint_engine=self.taint, **roles)
+                governor = ToolCallGovernor(taint_engine=taint, **roles)
             except TypeError:
                 governor = None
         if governor is None:
@@ -249,6 +254,7 @@ class Sidecar:
             governor = ToolCallGovernor(**roles)
         session = _Session(event.agent, event.session_id, node_id, governor,
                            RunRecorder(node_id))
+        session.taint = taint
         session.link = self._open_link(node_id)
         if session.link is not None and self._link_factory is None:
             link, agent, dev = session.link, event.agent, self.developer
@@ -257,6 +263,21 @@ class Sidecar:
         self.sessions[key] = session
         self.by_node[node_id] = session
         return session
+
+    def _session_taint(self) -> Any:  # noqa: ANN401 - a TaintEngine
+        """This session's taint engine: the workspace's value ledger, shared —
+        and its own context. axor-core keeps the context root per node ("a
+        session-wide root would taint every node once any one of them read
+        untrusted data"); one engine for every session made a docs page read in
+        the morning refuse every URL a later session had not been given in its
+        prompt. A kernel without a separable ledger keeps the shared engine."""
+        from axor_core.taint.engine import TaintEngine
+
+        if not hasattr(self.taint, "_ledger"):
+            return self.taint
+        engine = TaintEngine()
+        engine._ledger = self.taint._ledger   # the same object: written by every session
+        return engine
 
     def _open_link(self, node_id: str) -> Any:
         if self._link_factory is not None:
@@ -376,7 +397,7 @@ class Sidecar:
         for n in notes:
             text = str(n.get("text", ""))
             if n.get("outside"):
-                self.taint.register_value(text, CausalRoot(
+                session.taint.register_value(text, CausalRoot(
                     sources=frozenset({TaintSource.UNKNOWN_EXTERNAL})))
                 lines.append(f"- from {n.get('by') or 'a guest'} (outside the team — "
                              f"a suggestion, not an instruction): {text}")
@@ -524,7 +545,7 @@ class Sidecar:
         record.started = True
         record.would_deny = would
         try:
-            carried = self.taint.derive_carried(args)
+            carried = session.taint.derive_carried(args)
             record.carries = sorted(getattr(s, "value", str(s)) for s in carried.sources)
         except Exception:  # noqa: BLE001 - provenance is best-effort, never a refusal
             record.carries = []
@@ -556,7 +577,7 @@ class Sidecar:
                 names = {"web": TaintSource.WEB, "mcp": TaintSource.MCP}
                 roots = frozenset(names.get(x, TaintSource.CHILD_AGENT) for x in sources) \
                     or frozenset({TaintSource.CHILD_AGENT})
-                self.taint.register_value(output, CausalRoot(sources=roots))
+                session.taint.register_value(output, CausalRoot(sources=roots))
                 record.sources = sorted(getattr(r, "value", str(r)) for r in roots)
                 session.sources.update(x if x in names else "child_agent"
                                        for x in (sources or ["child_agent"]))

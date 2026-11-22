@@ -51,6 +51,13 @@
 
 ### Fixed
 
+- **One session's reading no longer taints the next.** The sidecar shared one
+  taint engine across every session in a repository — the value ledger, as
+  intended, but also the context ("this model has been shown outside text"),
+  which axor-core keeps per node. After any session read a web page, every
+  later session was refused any URL its prompt had not given it — opening
+  documentation included. Each session now has its own context over the
+  shared ledger: a page's command is still refused in any session.
 - **Tool results reach the plane again.** The sidecar daemon runs as
   `python -m axor_wrap.agents.sidecar`; a helper defined below its `__main__`
   guard did not exist there, so every tool result failed and only the calls
