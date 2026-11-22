@@ -353,6 +353,19 @@ class PlaneConnector:
         assert self._client is not None
         return await self._client.post_profile(kind, agent, developer, repo, repo_label)
 
+    async def post_title(self, title: str) -> bool:
+        """Name this coding session (PlaneClient.post_title)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.post_title(title)
+
+    @property
+    def profile_answer(self) -> dict | None:
+        """What the plane said to this node's profile — whether the plan shows
+        it (PlaneClient.profile_answer); None until it answered."""
+        return getattr(self._client, "profile_answer", None)
+
     async def get_memory(self, repo: str) -> dict | None:
         """The team's memory for a repository (PlaneClient.get_memory)."""
         if self._client is None:

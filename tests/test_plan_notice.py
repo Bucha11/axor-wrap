@@ -72,3 +72,13 @@ def test_the_first_request_names_the_session() -> None:
         car.handle(parse_event("claude-code", {"session_id": "s", "cwd": root,
                                                "hook_event_name": "UserPromptSubmit", "prompt": text}))
     assert titles == ["add a 10% discount for orders over $100"]
+
+
+def test_the_real_connector_carries_title_and_profile_answer() -> None:
+    """The sidecar talks to a PlaneConnector, which delegates to PlaneClient:
+    both what it sends (a title) and what it reads (the profile's answer) must
+    be on the connector, not only on the client behind it."""
+    from axor_wrap.connect import PlaneConnector
+
+    assert callable(getattr(PlaneConnector, "post_title", None))
+    assert "profile_answer" in dir(PlaneConnector)
