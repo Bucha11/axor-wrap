@@ -13,6 +13,7 @@ axor-core underneath it — stay dependency-free.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -105,6 +106,8 @@ class PlaneClient:
         # operator master token, which the node has no business holding.
         self._ingest_key = ingest_key
         self._seq = 0
+        # the plane's answer to post_profile: {"locked": [...], "detail"?}
+        self.profile_answer: dict | None = None
 
     def _auth(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         """Headers for one plane call: the bearer when configured, plus extras.
@@ -209,6 +212,12 @@ class PlaneClient:
                 )
         except httpx.HTTPError:
             return False
+        if response.status_code == 200:
+            # a plane that says more: whether the plan shows this session
+            with contextlib.suppress(ValueError):
+                answer = response.json()
+                if isinstance(answer, dict):
+                    self.profile_answer = answer
         return response.status_code < 300
 
     async def get_coding_policy(self) -> dict | None:

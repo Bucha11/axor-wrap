@@ -163,6 +163,7 @@ class _Session:
     last_seen: float = field(default_factory=time.time)
     notes_asked: float = 0.0       # when the plane was last asked for pair notes
     memory_given: bool = False     # the team's memory was given to this session
+    plan_said: bool = False        # the developer was told the plan does not show it
 
 
 class Sidecar:
@@ -419,7 +420,27 @@ class Sidecar:
                 answer = self._with_memory(session, event, answer)
             if event.kind in ("post_tool", "prompt"):
                 answer = self._with_notes(session, event, answer)
+                answer = self._with_plan(session, answer)
             return answer
+
+    def _with_plan(self, session: _Session, answer: dict) -> dict:
+        """Past the free plan (a second developer, a second agent family) the
+        plane keeps the session but does not show or operate it. Said once, to
+        the person: the session is protected here all the same."""
+        if session.plan_said or answer.get("user_message"):
+            return answer
+        connector = getattr(session.link, "connector", None)
+        said = getattr(connector, "profile_answer", None)
+        if not isinstance(said, dict):
+            return answer
+        session.plan_said = True
+        locked = said.get("locked") or []
+        if not locked:
+            return answer
+        why = str(said.get("detail") or "past the free plan")
+        return {**answer, "user_message": (
+            f"Axor: this session is protected on this machine, but your team's Control Plane "
+            f"does not show it — {why}. Ask your workspace's admin about the Coding plan.")}
 
     def _deny(self, session: _Session, event: HookEvent, reason: str, gate: str) -> dict:
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)

@@ -20,6 +20,17 @@
   connect` checks the key with the plane; at session start, a key the plane
   refuses (the developer was removed, or the key revoked) is said to the person
   in Claude Code (`systemMessage`). The session stays protected locally.
+- **A developer hears when the plan does not show their session.** Past the
+  free plan (a second developer, a second agent family) the plane keeps a
+  session but does not show or operate it; its answer to the session's profile
+  says so, and the sidecar tells the person once, in Claude Code.
+
+### Fixed
+
+- **Tool results reach the plane again.** The sidecar daemon runs as
+  `python -m axor_wrap.agents.sidecar`; a helper defined below its `__main__`
+  guard did not exist there, so every tool result failed and only the calls
+  were shown — never what came back, nor that it was text from outside.
 
 ## 0.3.0 — 2026-11-20
 
