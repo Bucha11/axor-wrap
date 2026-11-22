@@ -269,7 +269,8 @@ class PlaneClient:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(
-                    f"{self._base}/v1/coding/memory?repo={quote(repo, safe='')}",
+                    f"{self._base}/v1/coding/memory?repo={quote(repo, safe='')}"
+                    f"&node={quote(self.session.node_id, safe='')}",
                     headers=self._auth())
         except httpx.HTTPError:
             return None
