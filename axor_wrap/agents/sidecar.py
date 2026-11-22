@@ -508,6 +508,11 @@ class Sidecar:
         allowed = (rules.allowed_rules(self.root) - rules.refused_rules(self.root)
                    if team is None else team[0])
         rule = rules.check_call(tool, args, self.root, allowed)
+        excepted = (rules.excepted(rule, tool, args, self.root, rules.team_exceptions(policy))
+                    if rule is not None and team is not None else None)
+        if excepted is not None:
+            # the admin let exactly this through, for the team
+            rule = None
         if rule is not None and enforce:
             return self._deny(session, event, rules.refusal(rule, team=team is not None),
                               "consequence")
@@ -549,8 +554,15 @@ class Sidecar:
             record.carries = sorted(getattr(s, "value", str(s)) for s in carried.sources)
         except Exception:  # noqa: BLE001 - provenance is best-effort, never a refusal
             record.carries = []
+        trusted = (rules.trusted_host(str(args.get("url", "")), rules.trusted_sources(policy))
+                   if tool == "web_fetch" else None)
+        if excepted is not None:
+            record.allowed_by = {"exception": {k: excepted[k] for k in
+                                               ("rule", "path", "command") if excepted.get(k)}}
+        elif trusted:
+            record.allowed_by = {"trusted_source": trusted}
         session.pending[event.tool_use_id or f"{event.tool}:{len(session.pending)}"] = (
-            decision, record, tool, args)
+            decision, record, tool, args, trusted)
         self._ship(session)
         return {"allow": True, "note": note}
 
@@ -562,7 +574,7 @@ class Sidecar:
                         if entry[1].tool == event.tool), None)
         if key is None:
             return {"allow": True}
-        decision, record, tool, args = session.pending.pop(key)
+        decision, record, tool, args, trusted = session.pending.pop(key)
         output = _text(event.tool_response)
         status = "error" if isinstance(event.tool_response, dict) and (
             event.tool_response.get("is_error") or event.tool_response.get("error")) else "ok"
@@ -584,6 +596,14 @@ class Sidecar:
             else:
                 session.governor.register_output(decision, output)
             session.executed.append((tool, args))
+        elif status == "ok" and trusted:
+            # a host the team trusts: its page reads like the developer's own
+            # words — a command it shows is the developer's to run
+            from axor_core.contracts.taint import TrustedOrigin
+
+            session.governor.register_trusted(output, TrustedOrigin.OPERATOR)
+            session.executed.append((tool, args))
+            record.sources = []
         elif status == "ok":
             session.governor.register_output(decision, output)
             session.executed.append((tool, args))

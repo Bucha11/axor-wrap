@@ -92,6 +92,9 @@ class ToolRecord:
     # taint ledger saw them when it was admitted — the plane never remembers
     # a command for the team that something outside wrote
     carries: list = field(default_factory=list)
+    # what the team's policy let through: {"exception": {...}} — a rule the
+    # admin excepted this call from — or {"trusted_source": "pypi.org"}
+    allowed_by: dict | None = None
 
 
 @dataclass
@@ -168,6 +171,8 @@ class RunRecorder:
                     call["would_deny"] = dict(rec.would_deny)
                 if rec.carries:
                     call["carries"] = list(rec.carries)
+                if rec.allowed_by:
+                    call["allowed_by"] = dict(rec.allowed_by)
                 line: dict = {"kind": "tool_call", "payload": call}
                 if rec.status == "denied":
                     line.update(verdict="deny", gate=rec.gate or "budget")

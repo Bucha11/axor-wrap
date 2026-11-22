@@ -48,6 +48,13 @@
   refuse more (`.axor/rules.json` `{"refuse": [...]}`), never allow what the
   team refuses; without a team policy, the repository's own `allow` works as
   before. A refusal under the team's policy says an admin can allow it.
+- **Exceptions and trusted sources in the team's policy.** An admin lets one
+  thing through a rule for the team — a path (`tests/fixtures/*`) or a whole
+  command (`env | grep JWT`), `*` as a wildcard, matched whole and never as a
+  substring — while the rule keeps refusing everything else. Trusted sources
+  (`pypi.org`, `*.readthedocs.io`) are hosts whose pages read like the
+  developer's own words: a command such a page shows may be run. A call let
+  through either way ships with `allowed_by`, so the plane shows why.
 
 ### Fixed
 

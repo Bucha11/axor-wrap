@@ -308,6 +308,67 @@ def team_allowed(policy: dict | None, root: str) -> tuple[set[str], str] | None:
     return allow - refused_rules(root), mode
 
 
+def team_exceptions(policy: dict | None) -> list[dict]:
+    """What an admin let through one rule, for the team: a path glob or a
+    command glob (``tests/fixtures/*``, ``env | grep JWT``)."""
+    team = policy.get("rules") if isinstance(policy, dict) else None
+    raw = team.get("exceptions") if isinstance(team, dict) else None
+    return [e for e in raw if isinstance(e, dict) and e.get("rule") in RULES
+            and e.get("rule") != "agent_config"] if isinstance(raw, list) else []
+
+
+def trusted_sources(policy: dict | None) -> list[str]:
+    """Hosts the team reads like its own words (``pypi.org``, ``*.readthedocs.io``)."""
+    team = policy.get("rules") if isinstance(policy, dict) else None
+    raw = team.get("trusted_sources") if isinstance(team, dict) else None
+    return [str(h).lower() for h in raw if str(h).strip()] if isinstance(raw, list) else []
+
+
+def _norm(command: str) -> str:
+    return " ".join(command.split())
+
+
+def excepted(rule: Rule, tool: str, args: dict, root: str, exceptions: list[dict]) -> dict | None:
+    """The team's exception that lets this one call through ``rule``, if any.
+    A path matches relative to the repository (or as written); a command
+    matches whole, spaces folded — a glob, never a substring."""
+    from fnmatch import fnmatchcase
+
+    path = str(args.get("path") or "")
+    command = _norm(str(args.get("command") or ""))
+    candidates = set()
+    if path:
+        full = _resolve(path, root)
+        candidates = {path.strip(), full}
+        if _inside(full, root):
+            candidates.add(os.path.relpath(full, root))
+    for e in exceptions:
+        if e.get("rule") != rule.id:
+            continue
+        if e.get("path") and any(fnmatchcase(c, str(e["path"]).strip()) for c in candidates):
+            return e
+        if e.get("command") and command and fnmatchcase(command, _norm(str(e["command"]))):
+            return e
+    return None
+
+
+def trusted_host(url: str, sources: list[str]) -> str | None:
+    """The trusted-source entry this URL's host is under, or None."""
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url if "://" in url else f"https://{url}").hostname or "").lower()
+    except ValueError:
+        return None
+    for entry in sources:
+        if entry.startswith("*."):
+            if host == entry[2:] or host.endswith(entry[1:]):
+                return entry
+        elif host == entry:
+            return entry
+    return None
+
+
 def check_call(tool: str, args: dict, root: str, allow: set[str] | frozenset[str] = frozenset()) -> Rule | None:
     """The first rule this canonical call breaks, or None."""
     args = {k: (v if isinstance(v, str) else str(v)) for k, v in (args or {}).items()}
