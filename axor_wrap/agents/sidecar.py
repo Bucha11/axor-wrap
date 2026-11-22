@@ -684,10 +684,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 def _result_sources(governor: Any, decision: Any) -> list[str] | None:  # noqa: ANN401
     """Where a result came from, as the kernel registers it: a local command's
     output or a file the agent wrote is no "text from outside". None when this
@@ -708,3 +704,7 @@ def _result_sources(governor: Any, decision: Any) -> list[str] | None:  # noqa: 
     except Exception:  # noqa: BLE001 - provenance is reporting, never a refusal
         return None
     return [] if root is None else sorted(getattr(s, "value", str(s)) for s in root.sources)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
