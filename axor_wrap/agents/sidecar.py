@@ -164,6 +164,8 @@ class _Session:
     notes_asked: float = 0.0       # when the plane was last asked for pair notes
     memory_given: bool = False     # the team's memory was given to this session
     plan_said: bool = False        # the developer was told the plan does not show it
+    titled: bool = False           # its first request was sent as its title
+    refused: list = field(default_factory=list)   # what was refused, in the agent's words
 
 
 class Sidecar:
@@ -443,6 +445,7 @@ class Sidecar:
             f"does not show it — {why}. Ask your workspace's admin about the Coding plan.")}
 
     def _deny(self, session: _Session, event: HookEvent, reason: str, gate: str) -> dict:
+        session.refused.append((event.tool, reason))
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)
         record.gate = gate
         record.reason = reason
@@ -582,6 +585,14 @@ class Sidecar:
         if event.prompt:
             # the user's own words: a destination they named is not tainted
             session.governor.register_task(event.prompt)
+            link = session.link
+            if not session.titled and link is not None and hasattr(link, "connector"):
+                # the session's name on the plane: what it was asked first
+                session.titled = True
+                title = " ".join(event.prompt.split())[:120]
+                post = getattr(link.connector, "post_title", None)
+                if post is not None:
+                    link.submit(lambda: post(title))
         return {"allow": True}
 
     def _stop(self, session: _Session, event: HookEvent) -> dict:
@@ -647,6 +658,7 @@ class Sidecar:
             if session is None:
                 return {"known": False, "calls": [], "sources": []}
             return {"known": True, "calls": [list(c) for c in session.executed],
+                    "refused": [list(r) for r in session.refused],
                     "sources": sorted(session.sources)}
 
     def close(self) -> None:

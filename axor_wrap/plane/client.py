@@ -220,6 +220,19 @@ class PlaneClient:
                     self.profile_answer = answer
         return response.status_code < 300
 
+    async def post_title(self, title: str) -> bool:
+        """Name this coding session by the developer's first request in it —
+        the screens list sessions as tasks. The plane keeps the first."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._base}/v1/plane/{self.session.node_id}/title",
+                    json={"title": title[:120]}, headers=self._auth())
+        except httpx.HTTPError:
+            return False
+        return response.status_code < 300
+
     async def get_coding_policy(self) -> dict | None:
         """The organization's coding-agent policy (skills turned off), or None
         when the plane cannot be asked — the caller keeps what it last knew."""

@@ -43,3 +43,32 @@ def test_a_locked_session_is_told_once() -> None:
 def test_a_session_the_plan_shows_hears_nothing() -> None:
     assert _run({"locked": []}) == []
     assert _run(None) == []          # an older plane says nothing either
+
+
+def test_the_first_request_names_the_session() -> None:
+    import asyncio
+
+    titles: list[str] = []
+
+    class _Conn:
+        profile_answer = None
+
+        async def post_title(self, title: str) -> bool:
+            titles.append(title)
+            return True
+
+    class _TitleLink:
+        connector = _Conn()
+
+        def submit(self, fn):  # noqa: ANN001, ANN201
+            asyncio.run(fn())
+
+        def __getattr__(self, name: str):  # noqa: ANN204
+            return lambda *a, **k: None
+
+    root = tempfile.mkdtemp()
+    car = Sidecar(root, enforce=True, link_factory=lambda node: _TitleLink())
+    for text in ("add a 10% discount\n for orders over $100", "and run the tests"):
+        car.handle(parse_event("claude-code", {"session_id": "s", "cwd": root,
+                                               "hook_event_name": "UserPromptSubmit", "prompt": text}))
+    assert titles == ["add a 10% discount for orders over $100"]

@@ -35,6 +35,12 @@
   where the text came from and that the developer can run the command
   themselves — not the kernel's gate sentence.
 
+- **A session is named by what it was asked.** The developer's first request
+  in a session goes to the plane as its title (the first 120 characters), so
+  the screens list sessions as tasks instead of host-and-counter ids.
+- `skill try` counts calls the way the Control Plane does: what ran and what
+  was refused.
+
 ### Fixed
 
 - **Tool results reach the plane again.** The sidecar daemon runs as

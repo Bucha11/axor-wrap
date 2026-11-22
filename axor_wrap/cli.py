@@ -218,7 +218,10 @@ def _cmd_skill(args: argparse.Namespace) -> int:
     else:
         calls = result.report.get("calls", [])
         print(f"\n{args.agent} answered ({result.returncode}): {result.answer[:600]}")
-        print(f"{len(calls)} tool calls · outside text read from: "
+        refused = result.report.get("refused", [])
+        # the same count the Control Plane shows: what ran, and what was refused
+        print(f"{len(calls) + len(refused)} tool calls · {len(refused)} refused by Axor · "
+              f"outside text read from: "
               f"{', '.join(result.report.get('sources', [])) or 'nowhere'}")
         from axor_wrap import connection
 
