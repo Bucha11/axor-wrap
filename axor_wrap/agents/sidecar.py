@@ -202,6 +202,10 @@ class Sidecar:
         self.repo, self.repo_label = repo_identity(root)
         self.sessions: dict[str, _Session] = {}
         self.by_node: dict[str, _Session] = {}
+        # URLs fetched here before (allowed, and run): a page names itself, so
+        # its text holds pieces of its own URL — opening it again later is not
+        # a URL built from that page
+        self.fetched: set[str] = set()
         self.last_event = time.time()
         self._lock = threading.Lock()
         # skills turned off from the plane: (fetched at, names); re-asked
@@ -524,6 +528,11 @@ class Sidecar:
             if found is not None:
                 return self._deny(session, event, script_refusal(found), "consequence")
         decision = session.governor.evaluate(tool, args)
+        trusted = (rules.trusted_host(str(args.get("url", "")), rules.trusted_sources(policy))
+                   if tool == "web_fetch" else None)
+        if not decision.allowed and _refetch_ok(decision, tool, args, trusted,
+                                                self.fetched, session.sources):
+            decision = _Allowed(decision)
         if skill is not None:
             note = f"axor (observe only) would deny this call: {skill}"
             would: dict | None = {"gate": "capability", "reason": skill}
@@ -554,8 +563,6 @@ class Sidecar:
             record.carries = sorted(getattr(s, "value", str(s)) for s in carried.sources)
         except Exception:  # noqa: BLE001 - provenance is best-effort, never a refusal
             record.carries = []
-        trusted = (rules.trusted_host(str(args.get("url", "")), rules.trusted_sources(policy))
-                   if tool == "web_fetch" else None)
         if excepted is not None:
             record.allowed_by = {"exception": {k: excepted[k] for k in
                                                ("rule", "path", "command") if excepted.get(k)}}
@@ -607,6 +614,8 @@ class Sidecar:
         elif status == "ok":
             session.governor.register_output(decision, output)
             session.executed.append((tool, args))
+            if tool == "web_fetch" and len(self.fetched) < 10_000:
+                self.fetched.add(str(args.get("url", "")))
             if tool in taxonomy.UNTRUSTED_SOURCES:
                 session.sources.add("mcp" if tool == "mcp_tool" else "web")
         if tool == "bash":
@@ -772,6 +781,36 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO)
     asyncio.run(serve(args.root, args.socket or socket_path(args.root)))
     return 0
+
+
+class _Allowed:
+    """A kernel decision let through by the sidecar (_refetch_ok): it answers
+    as allowed, and is the kernel's own decision in everything else."""
+
+    allowed = True
+
+    def __init__(self, decision: Any) -> None:  # noqa: ANN401
+        self._decision = decision
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        return getattr(self._decision, name)
+
+
+def _refetch_ok(decision: Any, tool: str, args: dict, trusted: str | None,  # noqa: ANN401
+                fetched: set[str], sources: set) -> bool:
+    """A web fetch the kernel refused as built from outside text — only because
+    its URL holds a piece of a page read before — that is not: the same URL was
+    fetched here before (a page names itself) and this session has read no
+    outside text, or the host is one the team trusts. A secret leaving is never
+    let through here."""
+    if tool != "web_fetch" or "confidential" in str(decision.reason).lower():
+        return False
+    category = str(getattr(decision, "category", "") or "").lower()
+    reason = str(decision.reason).lower()
+    if not any(w in category + " " + reason for w in ("taint", "carrier")):
+        return False
+    url = str(args.get("url", ""))
+    return bool(trusted) or (url in fetched and not sources)
 
 
 def _plain_refusal(reason: str, gate: str, args: dict, sources: set) -> str:

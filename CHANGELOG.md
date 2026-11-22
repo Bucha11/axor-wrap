@@ -58,6 +58,13 @@
 
 ### Fixed
 
+- **A page can be opened again in a later session.** A page names itself —
+  the README of `authlib-oauth` says "authlib-oauth" — so the shared value
+  ledger read its own URL, fetched again the next day, as built from that
+  page, and refused it. A URL fetched here before is opened again while the
+  session has read no outside text; a host on the team's trusted sources is
+  not refused as outside text at all. A secret leaving is still refused, and a
+  URL never fetched before that carries a page's text still is.
 - **One session's reading no longer taints the next.** The sidecar shared one
   taint engine across every session in a repository — the value ledger, as
   intended, but also the context ("this model has been shown outside text"),

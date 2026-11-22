@@ -93,3 +93,21 @@ def test_the_same_page_elsewhere_is_still_outside_text() -> None:
     car, root = _car()
     out = _fetch_then_run(car, root, "https://pyjwt-docs.evil.example/install", PAGE, "pip install pyjwt")
     assert out["allow"] is False, out
+
+
+def test_a_trusted_docs_host_opens_even_when_another_page_named_it() -> None:
+    page = "Mirror of pyjwt.readthedocs.example/en/stable/installation.html — PyJWT docs"
+    for policy, opens in ((TEAM, True), ({"rules": {"allow": [], "mode": "enforce"}}, False)):
+        car, root = _car(policy)
+        car.handle(_ev(root, hook_event_name="UserPromptSubmit", prompt="look at the mirror", session_id="a"))
+        args = {"url": "https://mirror.example/pyjwt", "prompt": "docs"}
+        car.handle(_ev(root, hook_event_name="PreToolUse", tool_name="WebFetch", tool_input=args,
+                       tool_use_id="m", session_id="a"))
+        car.handle(_ev(root, hook_event_name="PostToolUse", tool_name="WebFetch", tool_input=args,
+                       tool_response={"result": page}, tool_use_id="m", session_id="a"))
+        car.handle(_ev(root, hook_event_name="UserPromptSubmit", prompt="install pyjwt per its docs",
+                       session_id="b"))
+        out = car.handle(_ev(root, hook_event_name="PreToolUse", tool_name="WebFetch", session_id="b",
+                             tool_input={"url": "https://pyjwt.readthedocs.example/en/stable/installation.html",
+                                         "prompt": "install"}, tool_use_id="d"))
+        assert out["allow"] is opens, (policy, out)
