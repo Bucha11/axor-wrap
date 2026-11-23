@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.4.0 — 2026-11-23
+
+The sidecar stops being one developer's guard and becomes the team's: it reads
+the workspace's rules, answers its controls, and says who did what in words a
+person recognises. Everything here needs a Control Plane — `axor-wrap connect`
+is still the only setup.
+
+### Added
+
+- **The team's policy, enforced locally.** The sidecar fetches the workspace's
+  rules from the plane and applies them to every call: its exceptions (by path
+  or by command) and its trusted sources. A host the team trusts stops reading
+  as text from outside, and a page fetched once opens again.
+- **Session controls answered where the agent runs.** A pause holds the call
+  until the resume arrives (`AXOR_HOLD_SECONDS`) instead of failing it; a stop
+  answers Claude Code with `continue: false`; the team's brake holds every
+  agent at once. Held calls ship as control, never as refusals — an operator
+  pausing an agent is not the agent being caught at something.
+- **Agent trees as one thing.** The orchestrator gates each stage on its root's
+  posture, so stopping or pausing a tree stops or pauses the tree. Snapshots go
+  to the plane one at a time, newest wins, so a fast tree no longer races its
+  own history.
+- **A Claude Code subagent is a branch of its session**, reported under its
+  parent with its own node, link and recorder — and stoppable on its own.
+- **Pair sessions.** The developer is told who asked to pair, who joined, and
+  every note given; their own note from the plane reads as theirs.
+- **A session names itself** from its first request, so the plane lists work,
+  not identifiers. Each session keeps its own context over the shared value
+  ledger, and a memory request says which session it is for.
+
+### Changed
+
+- Refusals are said in words: where the text came from, what the kernel
+  decided, and what to run by hand instead. A tool result ships with the
+  source the kernel registers rather than a guess from the call's arguments
+  (needs axor-core 0.13.1).
+- Past the workspace's seat limit the developer hears that an admin can raise
+  it, instead of a plan error.
+- A developer whose session the plan does not show is told so.
+- `skill share` points to Skills, where shared skills now live.
+
+### Fixed
+
+- Nothing below the `__main__` guard: importing the sidecar ran part of it.
+
 ## 0.3.1 — 2026-11-21
 
 ### Added
