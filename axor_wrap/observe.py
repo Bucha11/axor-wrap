@@ -95,6 +95,8 @@ class ToolRecord:
     # what the team's policy let through: {"exception": {...}} — a rule the
     # admin excepted this call from — or {"trusted_source": "pypi.org"}
     allowed_by: dict | None = None
+    # a call held by a control (paused / stopped / budget), not refused by a rule
+    control: str = ""
 
 
 @dataclass
@@ -174,6 +176,8 @@ class RunRecorder:
                 if rec.allowed_by:
                     call["allowed_by"] = dict(rec.allowed_by)
                 line: dict = {"kind": "tool_call", "payload": call}
+                if rec.control:
+                    call["control"] = rec.control
                 if rec.status == "denied":
                     line.update(verdict="deny", gate=rec.gate or "budget")
                     if rec.reason:

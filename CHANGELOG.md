@@ -48,6 +48,21 @@
   refuse more (`.axor/rules.json` `{"refuse": [...]}`), never allow what the
   team refuses; without a team policy, the repository's own `allow` works as
   before. A refusal under the team's policy says an admin can allow it.
+- **Session controls that hold up on long and parallel runs.**
+  - A tree stops and pauses as a whole: the orchestrator checks its root
+    between stages (a stopped tree starts no further node, and says which
+    were stopped) and passes a pause or stop to the nodes running, through
+    the workspace sidecar. A node stopped mid-way is `stopped`, not `ok` — its
+    answer no longer flows into the next stage.
+  - A pause holds the agent's call (up to `AXOR_HOLD_SECONDS`, 20 s) instead
+    of refusing it, so a short pause costs the agent nothing; a stop ends
+    Claude Code's turn (`continue: false`).
+  - The team's brake: an admin holds every coding agent at once from the
+    plane; the sidecar reads it with the team's policy.
+  - A call held by a control (pause, stop, budget, brake) ships as `control`
+    — the plane counts it apart from refusals.
+  - A note the developer sends their own agent from the plane reads as their
+    words ("a note from the developer"), and they see it given.
 - **A developer knows who is watching their session.** Pair sessions are by
   invitation on the plane; the sidecar now tells the person in Claude Code
   (`systemMessage`) who joined a pair on their session, who asks to, and every

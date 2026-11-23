@@ -237,3 +237,42 @@ def test_cli_refuses_a_mixed_tree_without_a_paid_plane(tmp_path: Path,
     assert "paid plan" in capsys.readouterr().err
     assert cli.main(["tree", "run", str(path), "--workspace", str(tmp_path)]) == cli.EXIT_EMPTY
     assert "error: mixing agent families" in capsys.readouterr().err
+
+
+async def test_a_tree_stopped_from_the_plane_runs_no_further_stage(workspace) -> None:
+    """Stopped after its plan: the readers and the implementer never start, and
+    they are said to be stopped — the tree is not "done"."""
+    import asyncio
+
+    snapshots: list[dict] = []
+
+    class _Plane:
+        state = "running"
+
+        class connector:  # noqa: N801
+            @staticmethod
+            async def post_tree(snap):
+                snapshots.append(snap)
+                if snap["nodes"]["plan"]["runs"] and \
+                        snap["nodes"]["plan"]["runs"][0].get("status") == "ok":
+                    _Plane.state = "stopped"
+
+            @staticmethod
+            async def post_trace(lines, run_id):
+                pass
+
+        @staticmethod
+        def posture():
+            return _Plane.state
+
+        @staticmethod
+        def submit(fn):
+            asyncio.get_event_loop().create_task(fn())
+
+    run = await run_tree(spec(), workspace, plane=_Plane())
+    await asyncio.sleep(0.1)
+    nodes = run.report["nodes"]
+    assert [o["status"] for o in nodes["plan"]] == ["ok"]
+    assert [o["status"] for o in nodes["read"]] == ["stopped"] * 5
+    assert [o["status"] for o in nodes["impl"]] == ["stopped"]
+    assert snapshots[-1]["status"] == "stopped"

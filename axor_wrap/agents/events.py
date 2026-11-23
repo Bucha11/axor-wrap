@@ -128,8 +128,13 @@ def render_decision(event: HookEvent, decision: dict) -> tuple[str, int]:
             return json.dumps({"hookSpecificOutput": {
                 "hookEventName": name, "additionalContext": note}}), 0
         return "", 0
-    return json.dumps({"hookSpecificOutput": {
+    out = {"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
         "permissionDecisionReason": decision.get("reason") or "denied by axor",
-    }}), 0
+    }}
+    if decision.get("halt") and event.agent == "claude-code":
+        # stopped from the Control Plane: Claude Code ends the turn here
+        out["continue"] = False
+        out["stopReason"] = decision.get("reason") or "stopped by axor"
+    return json.dumps(out), 0

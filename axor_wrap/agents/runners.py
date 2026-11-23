@@ -113,6 +113,10 @@ def parse_output(agent: str, stdout: str, last_message: str = "") -> tuple[str, 
     return text, usage
 
 
+# a node's answer when it was stopped: the tree reads it as stopped, not done
+STOPPED = "[child stopped"
+
+
 class CliAgent(Invokable):
     """One tree node's agent: a CLI run once per child the kernel spawns."""
 
@@ -199,6 +203,10 @@ class CliAgent(Invokable):
             text, usage = f"[{self.label}: the {self.agent} CLI is not installed here]", {}
         finally:
             os.unlink(last_file)
+        if any("stopped from the Control Plane" in str(r[1] if len(r) > 1 else r)
+               for r in self._report(envelope.node_id).get("refused", [])):
+            # its answer is not the work asked for: the node was stopped
+            text = f"{STOPPED} — {self.label} was stopped from the Control Plane]"
         yield ExecutorEvent(kind=ExecutorEventKind.TEXT, payload={"text": text},
                             node_id=envelope.node_id)
         yield ExecutorEvent(kind=ExecutorEventKind.STOP, payload={"usage": usage},

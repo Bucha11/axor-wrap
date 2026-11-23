@@ -100,6 +100,16 @@ def node_report(root: str, node_id: str) -> dict:
         return {"known": False, "calls": [], "sources": []}
 
 
+def hold(root: str, node_ids: list[str], state: str) -> dict:
+    """A tree's orchestrator passes its root's pause / stop to the nodes it runs
+    (see Sidecar.hold). An unreachable sidecar holds nothing."""
+    try:
+        return _request(socket_path(root), {"op": "hold", "node_ids": node_ids,
+                                            "state": state}, 10.0)
+    except (OSError, ValueError):
+        return {"held": {}}
+
+
 def decide(event: HookEvent, *, autostart: bool = True, timeout: float = 30.0) -> dict:
     root = workspace_root(event.cwd)
     path = socket_path(root)

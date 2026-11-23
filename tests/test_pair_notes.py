@@ -151,3 +151,15 @@ def test_the_developer_is_told_who_joined_and_every_note_their_agent_got(setup) 
     event = ev("claude-code", "UserPromptSubmit", prompt="go on")
     out, _ = render_decision(event, car.handle(event))
     assert "systemMessage" not in (json.loads(out) if out else {})
+
+
+def test_the_developers_own_note_from_the_plane_reads_as_theirs(setup) -> None:
+    car, link = setup
+    link.notes = [{"id": 9, "by": "ada@acme.io", "own": True,
+                   "text": "use the existing token table"}]
+    event = ev("claude-code", "UserPromptSubmit", prompt="add refresh tokens")
+    body = json.loads(render_decision(event, car.handle(event))[0])
+    assert "A note from the developer" in body["hookSpecificOutput"]["additionalContext"]
+    assert "- from the developer: use the existing token table" in \
+        body["hookSpecificOutput"]["additionalContext"]
+    assert "your note from the Control Plane was given to your agent" in body["systemMessage"]

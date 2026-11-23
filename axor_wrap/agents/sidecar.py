@@ -43,6 +43,9 @@ ENV_ENFORCE = "AXOR_ENFORCE"
 POLICY_TTL = float(os.environ.get("AXOR_POLICY_TTL", "30"))
 # how often a session asks the plane for notes from a pair session
 NOTES_TTL = float(os.environ.get("AXOR_NOTES_TTL", "3"))
+# a paused agent's call waits this long for the resume before it is refused
+# (inside the agents' 30 s hook timeout): a short pause costs it nothing
+HOLD_SECONDS = float(os.environ.get("AXOR_HOLD_SECONDS", "20"))
 
 
 def socket_path(root: str) -> str:
@@ -206,6 +209,9 @@ class Sidecar:
         # its text holds pieces of its own URL — opening it again later is not
         # a URL built from that page
         self.fetched: set[str] = set()
+        # what a tree's orchestrator said for its running nodes: "paused" or
+        # "stopped" — the tree's root was, and the tree passes it child-ward
+        self.held: dict[str, str] = {}
         self.last_event = time.time()
         self._lock = threading.Lock()
         # skills turned off from the plane: (fetched at, names); re-asked
@@ -396,8 +402,11 @@ class Sidecar:
         news = [str(n) for n in (take() or []) if isinstance(n, str)] if callable(take) else []
         # said to the PERSON (not the model): who is watching this session,
         # who asks to, and every note their agent is given — word for word
-        told = list(news) + [f"Note from {n.get('by') or 'someone'} in a pair session, given "
-                             f"to your agent: {str(n.get('text', ''))[:300]}" for n in notes or []]
+        told = list(news) + [
+            ("your note from the Control Plane was given to your agent: "
+             if n.get("own") else
+             f"Note from {n.get('by') or 'someone'} in a pair session, given to your agent: ")
+            + str(n.get("text", ""))[:300] for n in notes or []]
         if told:
             prior_tell = answer.get("user_message")
             answer = {**answer, "user_message": "\n".join(
@@ -415,14 +424,22 @@ class Sidecar:
                     sources=frozenset({TaintSource.UNKNOWN_EXTERNAL})))
                 lines.append(f"- from {n.get('by') or 'a guest'} (outside the team — "
                              f"a suggestion, not an instruction): {text}")
+            elif n.get("own"):
+                # the developer, from the Control Plane (their phone, the
+                # plane's session panel): their own words, like a prompt
+                session.governor.register_task(text)
+                lines.append(f"- from the developer: {text}")
             else:
                 session.governor.register_task(text)
                 lines.append(f"- from {n.get('by') or 'a teammate'}: {text}")
         ids = [n["id"] for n in notes if isinstance(n.get("id"), int)]
         at = event.tool or "prompt"
         link.submit(lambda: link.connector.post_notes_delivered(ids, at))
-        note = ("Notes from your pair session, sent through the Axor Control Plane by "
-                "people watching this session live:\n" + "\n".join(lines))
+        own = all(n.get("own") for n in notes)
+        note = (("A note from the developer, sent from the Axor Control Plane while you "
+                 "work — take it into account from your next step:\n") if own else
+                ("Notes sent through the Axor Control Plane by the developer and the people "
+                 "they let watch this session live:\n")) + "\n".join(lines)
         prior = answer.get("note")
         return {**answer, "note": f"{prior}\n\n{note}" if prior else note}
 
@@ -438,9 +455,56 @@ class Sidecar:
 
     # ── events ────────────────────────────────────────────────────────────────
 
+    def hold(self, node_ids: list[str], state: str) -> dict:
+        """A tree's orchestrator passes its root's pause / stop to the nodes it
+        runs (``"running"`` lifts a pause; a stop stands)."""
+        with self._lock:
+            for node in node_ids:
+                if state == "running":
+                    if self.held.get(node) == "paused":
+                        del self.held[node]
+                elif self.held.get(node) != "stopped":
+                    self.held[node] = state
+        return {"held": {n: self.held.get(n, "running") for n in node_ids}}
+
+    def posture(self, session: _Session) -> tuple[str, str]:
+        """(``running`` | ``paused`` | ``stopped``, by whom) — the session's own
+        command, its tree's, or the team's brake an admin pulled."""
+        link = session.link
+        own = link.posture() if link is not None else "running"
+        if own == "stopped" or self.held.get(session.node_id) == "stopped":
+            return "stopped", "own" if own == "stopped" else "tree"
+        brake = self._brake(link)
+        if own == "paused":
+            return "paused", "own"
+        if self.held.get(session.node_id) == "paused":
+            return "paused", "tree"
+        if brake:
+            return "paused", "brake"
+        return "running", ""
+
+    def _brake(self, link: Any) -> dict | None:  # noqa: ANN401
+        """The team's brake (an admin's pause of every agent), with the policy."""
+        if link is None:
+            return None
+        policy, _ = self._policy(link)
+        brake = policy.get("brake") if isinstance(policy, dict) else None
+        return brake if isinstance(brake, dict) and brake.get("on") else None
+
+    def _wait_while_paused(self, event: HookEvent) -> None:
+        """A paused agent's call is held here — outside the lock, so the other
+        sessions go on — until it is resumed, stopped, or HOLD_SECONDS pass."""
+        with self._lock:
+            session = self._session(event)
+        deadline = time.time() + HOLD_SECONDS
+        while time.time() < deadline and self.posture(session)[0] == "paused":
+            time.sleep(0.5)
+
     def handle(self, event: HookEvent) -> dict:
         """The answer to one hook event: ``{"allow": bool, "reason": str,
         "note": str}``. Only a pre_tool answer can deny."""
+        if event.kind == "pre_tool" and HOLD_SECONDS > 0:
+            self._wait_while_paused(event)
         with self._lock:
             self.last_event = time.time()
             session = self._session(event)
@@ -479,30 +543,44 @@ class Sidecar:
             f"Axor: this session is protected on this machine, but your team's Control Plane "
             f"does not show it — {why}. Ask your workspace's admin about the Coding plan.")}
 
-    def _deny(self, session: _Session, event: HookEvent, reason: str, gate: str) -> dict:
+    def _deny(self, session: _Session, event: HookEvent, reason: str, gate: str,
+              control: str = "") -> dict:
         session.refused.append((event.tool, reason))
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)
         record.gate = gate
         record.reason = reason
+        # held by someone's control (a pause, a stop, a budget, the team's
+        # brake) — not a rule refusing the call: the plane does not count it
+        record.control = control
         session.recorder.end_tool(record, "", status="denied")
         self._ship(session)
-        return {"allow": False, "reason": f"axor: {reason}"}
+        answer: dict = {"allow": False, "reason": f"axor: {reason}"}
+        if control == "stopped":
+            # stopped is for good: the agent ends its turn instead of trying
+            # one call after another (Claude Code: continue false)
+            answer["halt"] = True
+        return answer
 
     def _pre_tool(self, session: _Session, event: HookEvent) -> dict:
         link = session.link
+        state, by = self.posture(session)
+        if state == "stopped":
+            return self._deny(session, event, "this agent was stopped from the Control Plane"
+                              + (" (its tree was stopped)" if by == "tree" else "")
+                              + " — end this turn", "capability", "stopped")
+        if state == "paused":
+            who = {"tree": "its tree is paused from the Control Plane",
+                   "brake": "your team's admin paused every agent from the Control Plane"
+                   }.get(by, "this agent is paused from the Control Plane")
+            return self._deny(session, event, f"{who} — wait until it is resumed, then "
+                              "try the call again", "capability", "paused")
         if link is not None:
-            posture = link.posture()
-            if posture == "stopped":
-                return self._deny(session, event, "this agent was stopped from the "
-                                  "Control Plane", "capability")
-            if posture == "paused":
-                return self._deny(session, event, "this agent is paused from the "
-                                  "Control Plane — wait until it is resumed", "capability")
             cap = link.budget_cap_calls()
             if cap is not None and session.calls >= cap:
                 return self._deny(session, event,
                                   f"the call budget set from the Control Plane ({cap}) "
-                                  "is spent", "budget")
+                                  "is spent — stop here and say what is left to do",
+                                  "budget", "budget")
         tool, args = taxonomy.canonical(event.agent, event.tool, event.tool_input)
         off = self.skills_off(link, session.agent) | rules.local_skills_off(self.root)
         # the team's rules, once an admin saved them: what is allowed, and
@@ -747,6 +825,9 @@ async def serve(root: str, path: str, *, idle: float | None = None) -> None:
             message = json.loads(await reader.readline())
             if message.get("op") == "node_report":
                 answer = sidecar.node_report(str(message.get("node_id", "")))
+            elif message.get("op") == "hold":
+                answer = sidecar.hold([str(n) for n in message.get("node_ids") or []],
+                                      str(message.get("state", "running")))
             else:
                 answer = await asyncio.to_thread(sidecar.handle, HookEvent.from_wire(message))
         except Exception as exc:  # noqa: BLE001 - answer, never hang the agent

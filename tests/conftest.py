@@ -11,3 +11,9 @@ def _isolated_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     from axor_wrap import connection
 
     monkeypatch.setattr(connection, "path", lambda: tmp_path / ".axor" / "connection.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A paused call is refused at once in tests (test_session_controls waits)."""
+    monkeypatch.setattr("axor_wrap.agents.sidecar.HOLD_SECONDS", 0.0)

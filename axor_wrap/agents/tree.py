@@ -268,6 +268,9 @@ class TreeExecutor(Invokable):
         self.status = "running"
         # each run of each node, by index: its plane node id once it started
         self.runs: dict[str, dict[int, dict]] = {n.name: {} for n in spec.nodes}
+        # passes the root's pause / stop to running nodes (the local sidecar)
+        self.hold: Any = None
+        self.poll = 1.0
         # prompt → the runs it was issued for, in order (identical prompts —
         # readers with no questions to share out — are told apart by order)
         self._asked: dict[str, list[tuple[str, int]]] = {}
@@ -341,8 +344,78 @@ class TreeExecutor(Invokable):
         if directive is not None:
             self.excised += self.store.excise(list(directive.target_refs))
 
+    # ── the root's controls ──────────────────────────────────────────────────
+
+    def _posture(self) -> str:
+        get = getattr(self.plane, "posture", None)
+        try:
+            return str(get()) if get is not None else "running"
+        except Exception:  # noqa: BLE001 - a plane outage never stops the tree
+            return "running"
+
+    def _running_nodes(self) -> list[str]:
+        return [r["node_id"] for runs in self.runs.values() for r in runs.values()
+                if r.get("node_id") and r.get("status") == "running"]
+
+    async def _gate(self) -> bool:
+        """Before a stage: wait out a pause; False once the tree is stopped."""
+        import asyncio
+
+        while True:
+            state = self._posture()
+            if state == "stopped":
+                return False
+            if state != "paused":
+                if self.status == "paused":
+                    self.status = "running"
+                    self.publish()
+                return True
+            if self.status != "paused":
+                self.status = "paused"
+                self.publish()
+            await asyncio.sleep(self.poll)
+
+    async def _watch(self) -> None:
+        """During a stage: the root's pause / stop reaches the nodes running."""
+        import asyncio
+
+        said = "running"
+        while True:
+            state = self._posture()
+            if state != said and self.hold is not None:
+                try:
+                    self.hold(self._running_nodes(), state)
+                except Exception:  # noqa: BLE001 - the sidecar may be gone
+                    pass
+                said = state
+                if state in ("paused", "stopped") or self.status == "paused":
+                    self.status = state
+                    self.publish()
+            await asyncio.sleep(self.poll)
+
+    def _stop_rest(self, stages: list) -> None:
+        """Stopped: what was not run is said so, not left looking pending."""
+        for stage in stages:
+            for node in stage:
+                done = {o["index"] for o in self.outputs.get(node.name, [])}
+                for i in range(node.count):
+                    if i not in done:
+                        self.outputs.setdefault(node.name, []).append(
+                            {"index": i, "status": "stopped",
+                             "reason": "the tree was stopped from the Control Plane"})
+        self.status = "stopped"
+        self.publish()
+
     async def stream(self, envelope: Any) -> AsyncIterator[ExecutorEvent]:
-        for k, stage in enumerate(self.spec.stages()):
+        import asyncio
+
+        from axor_wrap.agents.runners import STOPPED
+
+        stages = self.spec.stages()
+        for k, stage in enumerate(stages):
+            if not await self._gate():
+                self._stop_rest(stages[k:])
+                break
             self._take_excision()
             asked: list[tuple[NodeSpec, int]] = []
             children: list[dict] = []
@@ -372,11 +445,21 @@ class TreeExecutor(Invokable):
             self.publish()
             tid = f"stage-{k}"
             args = children[0] if len(children) == 1 else {"children": children}
-            yield ExecutorEvent(kind=ExecutorEventKind.TOOL_USE,
-                                payload={"tool": "spawn_child", "args": args,
-                                         "tool_use_id": tid},
-                                node_id=envelope.node_id)
+            watcher = asyncio.ensure_future(self._watch())
+            try:
+                yield ExecutorEvent(kind=ExecutorEventKind.TOOL_USE,
+                                    payload={"tool": "spawn_child", "args": args,
+                                             "tool_use_id": tid},
+                                    node_id=envelope.node_id)
+            finally:
+                watcher.cancel()
+            stopped = self._posture() == "stopped"
             for (node, i), outcome in zip(asked, self._outcomes(tid, len(children))):
+                if str(outcome.get("output", "")).startswith(STOPPED) or (
+                        stopped and outcome.get("status") == "ok"):
+                    # its answer is not the work: it was stopped mid-way
+                    outcome = {"status": "stopped",
+                               "reason": "stopped from the Control Plane"}
                 self.outputs.setdefault(node.name, []).append({"index": i, **outcome})
                 if outcome.get("status") == "ok":
                     self.store.add_answer(node.name, i, node.out, outcome["output"])
@@ -537,6 +620,8 @@ async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
     for role in roles:
         role.executor.context_store = store_path
     executor = TreeExecutor(spec, store, plane)
+    if start_sidecar:
+        executor.hold = lambda ids, state: client.hold(root_dir, ids, state)
     for role in roles:
         role.executor.on_start = executor.note_start
     session = GovernedSession(
@@ -558,8 +643,9 @@ async def run_tree(spec: TreeSpec, workspace: str, *, report: Any = None,
         executor.publish(final=True)
         raise
     every = [o for outs in executor.outputs.values() for o in outs]
-    executor.status = "done" if every and all(o.get("status") == "ok" for o in every) \
-        else "failed"
+    if executor.status != "stopped":
+        executor.status = "done" if every and all(o.get("status") == "ok" for o in every) \
+            else "failed"
     executor.publish(final=True)
     # the root is the tree run on the plane; its children are named by the
     # kernel's node ids, the same ids their hooks report under
