@@ -612,9 +612,14 @@ class Sidecar:
         if not locked:
             return answer
         why = str(said.get("detail") or "past the free plan")
+        # past the team's own seat limit, the admin raises the limit; past the
+        # free plan, the plan is what to ask about
+        ask = ("Your workspace's admin can raise the seat limit in Settings → Billing."
+               if "seat_cap" in locked
+               else "Ask your workspace's admin about the Coding plan.")
         return {**answer, "user_message": (
             f"Axor: this session is protected on this machine, but your team's Control Plane "
-            f"does not show it — {why}. Ask your workspace's admin about the Coding plan.")}
+            f"does not show it — {why}. {ask}")}
 
     def _deny(self, session: _Session, event: HookEvent, reason: str, gate: str,
               control: str = "", halt: bool = True) -> dict:

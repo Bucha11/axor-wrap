@@ -78,6 +78,10 @@
 
 ### Added
 
+- **Past the team's seat limit, the developer is told what to ask for.** A
+  session the plane keeps out because the workspace's seat limit is reached
+  says so in the agent, and that the admin can raise the limit (not "ask about
+  the Coding plan").
 - **A subagent is a branch of its session.** A call Claude Code's Agent tool
   makes inside a subagent arrives with the subagent's id and type: the sidecar
   reports it as a node of its own, named under its session and titled by what

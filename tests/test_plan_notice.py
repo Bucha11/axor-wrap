@@ -40,6 +40,13 @@ def test_a_locked_session_is_told_once() -> None:
     assert "protected on this machine" in said[0] and "second developer" in said[0]
 
 
+def test_past_the_seat_limit_the_admin_raises_it() -> None:
+    said = _run({"locked": ["seat_cap"],
+                 "detail": "past the workspace's seat limit this month"})
+    assert len(said) == 1 and "can raise the seat limit" in said[0]
+    assert "Coding plan" not in said[0]
+
+
 def test_a_session_the_plan_shows_hears_nothing() -> None:
     assert _run({"locked": []}) == []
     assert _run(None) == []          # an older plane says nothing either
