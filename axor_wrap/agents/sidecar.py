@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import hashlib
 import json
 import logging
@@ -170,6 +171,14 @@ class _Session:
     plan_said: bool = False        # the developer was told the plan does not show it
     titled: bool = False           # its first request was sent as its title
     refused: list = field(default_factory=list)   # what was refused, in the agent's words
+    # a subagent (Claude Code's Agent tool): the session that started it. It
+    # is a node of its own on the plane — its calls, its pause and stop — but
+    # judged by its session's governor: it works on what the session was asked
+    parent: Any = None
+    kind: str = ""                 # its type: "Explore", "general-purpose", …
+    # subagents this session launched and that have not shown up yet:
+    # (type, what it was asked to do), for the subagent's title
+    launched: list = field(default_factory=list)
 
 
 class Sidecar:
@@ -226,6 +235,8 @@ class Sidecar:
         return f"{event.agent}-{socket.gethostname()}-{event.session_id[:8]}"
 
     def _session(self, event: HookEvent) -> _Session:
+        if event.subagent_id:
+            return self._subagent(event)
         key = f"{event.agent}:{event.session_id}"
         found = self.sessions.get(key)
         if found is not None:
@@ -270,6 +281,49 @@ class Sidecar:
             link, agent, dev = session.link, event.agent, self.developer
             repo, label = self.repo, self.repo_label
             link.submit(lambda: link.connector.post_profile("coding", agent, dev, repo, label))
+        self.sessions[key] = session
+        self.by_node[node_id] = session
+        return session
+
+    def _subagent(self, event: HookEvent) -> _Session:
+        """A subagent's own session: named under the session that started it,
+        reported as a node of its own (the plane draws it as a branch), its
+        calls judged by that session's governor."""
+        key = f"{event.agent}:{event.session_id}:{event.subagent_id}"
+        found = self.sessions.get(key)
+        if found is not None:
+            found.last_seen = time.time()
+            return found
+        from axor_wrap.observe import RunRecorder
+
+        parent = self._session(dataclasses.replace(event, subagent_id="", subagent_type=""))
+        kind = event.subagent_type or "subagent"
+        word = "".join(c if c.isalnum() or c in "-_" else "-" for c in kind)[:40] or "subagent"
+        tail = "".join(c for c in event.subagent_id if c.isalnum())[-8:] or "x"
+        node_id = f"{parent.node_id}.{word}-{tail}"
+        session = _Session(event.agent, event.session_id, node_id, parent.governor,
+                           RunRecorder(node_id), parent=parent, kind=kind)
+        session.taint = parent.taint
+        session.link = self._open_link(node_id)
+        asked = next((d for t, d in parent.launched if t == kind), None)
+        if asked is None and parent.launched:
+            asked = parent.launched[0][1]
+        parent.launched = [x for x in parent.launched if x[1] != asked] if asked else parent.launched
+        profile = getattr(getattr(session.link, "connector", None), "post_profile", None)
+        if profile is not None:
+            agent, dev, repo, label, up = (event.agent, self.developer, self.repo,
+                                           self.repo_label, parent.node_id)
+            session.link.submit(lambda: profile("coding", agent, dev, repo, label, parent=up))
+        if session.link is not None and asked:
+            session.titled = True
+            post = getattr(getattr(session.link, "connector", None), "post_title", None)
+            if post is not None:
+                title = f"{kind}: {' '.join(asked.split())}"[:120]
+                session.link.submit(lambda: post(title))
+        # the session's trace says it started one: the graph draws the edge
+        self._ship(parent, [{"kind": "node_spawned", "payload": {
+            "child_id": node_id, "parent_id": parent.node_id, "depth": 1,
+            "role": kind, "edge_kind": "delegation", "subagent": True}}])
         self.sessions[key] = session
         self.by_node[node_id] = session
         return session
@@ -469,7 +523,18 @@ class Sidecar:
 
     def posture(self, session: _Session) -> tuple[str, str]:
         """(``running`` | ``paused`` | ``stopped``, by whom) — the session's own
-        command, its tree's, or the team's brake an admin pulled."""
+        command, its tree's, or the team's brake an admin pulled. A subagent is
+        held by its own command and by its session's: pausing the session
+        pauses what it started."""
+        state, by = self._posture_of(session)
+        parent = session.parent
+        if parent is not None and state != "stopped":
+            up, up_by = self._posture_of(parent)
+            if up == "stopped" or (up == "paused" and state == "running"):
+                return up, "parent" if up_by == "own" else up_by
+        return state, by
+
+    def _posture_of(self, session: _Session) -> tuple[str, str]:
         link = session.link
         own = link.posture() if link is not None else "running"
         if own == "stopped" or self.held.get(session.node_id) == "stopped":
@@ -515,7 +580,15 @@ class Sidecar:
                 "stop": self._stop,
                 "session_end": self._session_end,
                 "session_start": self._session_start,
+                "subagent_start": lambda _s, _e: {"allow": True},
+                "subagent_stop": self._subagent_stop,
             }.get(event.kind)
+            if event.kind == "pre_tool" and event.tool in ("Agent", "Task") \
+                    and not event.subagent_id:
+                # what the subagent is asked: its name on the plane
+                ask = event.tool_input
+                session.launched.append((str(ask.get("subagent_type") or "general-purpose"),
+                                         str(ask.get("description") or ask.get("prompt") or "")))
             answer = handler(session, event) if handler else {"allow": True}
             if event.kind in ("session_start", "prompt"):
                 answer = self._with_memory(session, event, answer)
@@ -544,7 +617,7 @@ class Sidecar:
             f"does not show it — {why}. Ask your workspace's admin about the Coding plan.")}
 
     def _deny(self, session: _Session, event: HookEvent, reason: str, gate: str,
-              control: str = "") -> dict:
+              control: str = "", halt: bool = True) -> dict:
         session.refused.append((event.tool, reason))
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)
         record.gate = gate
@@ -555,7 +628,7 @@ class Sidecar:
         session.recorder.end_tool(record, "", status="denied")
         self._ship(session)
         answer: dict = {"allow": False, "reason": f"axor: {reason}"}
-        if control == "stopped":
+        if control == "stopped" and halt:
             # stopped is for good: the agent ends its turn instead of trying
             # one call after another (Claude Code: continue false)
             answer["halt"] = True
@@ -564,13 +637,22 @@ class Sidecar:
     def _pre_tool(self, session: _Session, event: HookEvent) -> dict:
         link = session.link
         state, by = self.posture(session)
+        if state == "stopped" and session.parent is not None and by == "own":
+            # this subagent alone: it ends, the session that started it goes on
+            return self._deny(session, event, "this subagent was stopped from the Control "
+                              "Plane — make no more calls; report what you have found so far",
+                              "capability", "stopped", halt=False)
         if state == "stopped":
             return self._deny(session, event, "this agent was stopped from the Control Plane"
                               + (" (its tree was stopped)" if by == "tree" else "")
+                              + (" (the session that started it was stopped)"
+                                 if by == "parent" else "")
                               + " — end this turn", "capability", "stopped")
         if state == "paused":
             who = {"tree": "its tree is paused from the Control Plane",
-                   "brake": "your team's admin paused every agent from the Control Plane"
+                   "brake": "your team's admin paused every agent from the Control Plane",
+                   "parent": "the session that started this subagent is paused from the "
+                             "Control Plane",
                    }.get(by, "this agent is paused from the Control Plane")
             return self._deny(session, event, f"{who} — wait until it is resumed, then "
                               "try the call again", "capability", "paused")
@@ -746,6 +828,17 @@ class Sidecar:
         self._finish(session, answer)
         return {"allow": True}
 
+    def _subagent_stop(self, session: _Session, event: HookEvent) -> dict:
+        """A subagent finished: its answer closes its run, and it is done."""
+        if session.parent is None:
+            return {"allow": True}
+        self._finish(session, event.last_message)
+        self.sessions.pop(f"{event.agent}:{event.session_id}:{event.subagent_id}", None)
+        if session.link is not None:
+            with contextlib.suppress(Exception):
+                session.link.close()
+        return {"allow": True}
+
     def _session_start(self, session: _Session, event: HookEvent) -> dict:
         """A new session: bring the team's skills up to date before it starts
         (the team's memory is added by :meth:`_with_memory`)."""
@@ -802,9 +895,13 @@ class Sidecar:
             session = self.by_node.get(node_id)
             if session is None:
                 return {"known": False, "calls": [], "sources": []}
-            return {"known": True, "calls": [list(c) for c in session.executed],
-                    "refused": [list(r) for r in session.refused],
-                    "sources": sorted(session.sources)}
+            # what its subagents did is its own work too (a reader's findings
+            # are checked against every file it, or a subagent of it, opened)
+            subs = [s for s in self.by_node.values() if s.parent is session]
+            return {"known": True,
+                    "calls": [list(c) for x in (session, *subs) for c in x.executed],
+                    "refused": [list(r) for x in (session, *subs) for r in x.refused],
+                    "sources": sorted(set(session.sources).union(*(x.sources for x in subs)))}
 
     def close(self) -> None:
         for session in list(self.sessions.values()):

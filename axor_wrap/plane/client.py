@@ -198,7 +198,7 @@ class PlaneClient:
             return response.json()
 
     async def post_profile(self, kind: str, agent: str = "", developer: str = "",
-                           repo: str = "", repo_label: str = "") -> bool:
+                           repo: str = "", repo_label: str = "", parent: str = "") -> bool:
         """Say what this node is — ``agent`` (production), ``coding`` (a coding
         agent session) or ``tree`` (a tree run) — once. The plane meters coding
         sessions by developer instead of counting them as governed nodes."""
@@ -208,7 +208,9 @@ class PlaneClient:
                 response = await client.post(
                     f"{self._base}/v1/plane/{self.session.node_id}/profile",
                     json={"kind": kind, "agent": agent, "developer": developer,
-                          **({"repo": repo, "repo_label": repo_label} if repo else {})},
+                          **({"repo": repo, "repo_label": repo_label} if repo else {}),
+                          # a subagent: the session that started it
+                          **({"parent": parent} if parent else {})},
                     headers=self._auth(),
                 )
         except httpx.HTTPError:

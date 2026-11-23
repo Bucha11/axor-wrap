@@ -25,6 +25,7 @@ _KINDS = {
     "PostToolUseFailure": "post_tool",
     "UserPromptSubmit": "prompt",
     "Stop": "stop",
+    "SubagentStart": "subagent_start",
     "SubagentStop": "subagent_stop",
     "SessionStart": "session_start",
     "SessionEnd": "session_end",
@@ -52,6 +53,10 @@ class HookEvent:
     role: str = ""
     access: str = ""            # "read" = a read-only node of a tree
     hook: str = ""              # the agent's own event name (PostToolUseFailure, …)
+    # Claude Code: the event fired inside a subagent (its Agent tool) — which
+    # one, and its type ("Explore", "general-purpose", a custom agent's name)
+    subagent_id: str = ""
+    subagent_type: str = ""
 
     def to_wire(self) -> dict:
         return dict(self.__dict__)
@@ -95,6 +100,8 @@ def parse_event(agent: str, raw: str | dict, env: dict | None = None) -> HookEve
         role=env.get("AXOR_ROLE", ""),
         access=env.get("AXOR_ACCESS", ""),
         hook=str(data.get("hook_event_name") or ""),
+        subagent_id=str(data.get("agent_id") or ""),
+        subagent_type=str(data.get("agent_type") or "") if data.get("agent_id") else "",
     )
 
 

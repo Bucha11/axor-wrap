@@ -76,6 +76,18 @@
   developer's own words: a command such a page shows may be run. A call let
   through either way ships with `allowed_by`, so the plane shows why.
 
+### Added
+
+- **A subagent is a branch of its session.** A call Claude Code's Agent tool
+  makes inside a subagent arrives with the subagent's id and type: the sidecar
+  reports it as a node of its own, named under its session and titled by what
+  it was asked ("Explore: find every login handler"), with its own calls, run
+  and answer. It is judged by its session's governor (it works on what the
+  session was asked). Pausing the session holds its subagents; a subagent can
+  be paused or stopped alone — stopped, it is told to report what it has, and
+  the session goes on. `agents install claude-code` adds SubagentStart and
+  SubagentStop. A tree node's report counts what its subagents read.
+
 ### Fixed
 
 - **A tree's snapshots reach the plane in order.** They were posted side by

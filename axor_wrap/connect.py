@@ -346,11 +346,14 @@ class PlaneConnector:
         return await self._client.post_ingest(events, run_id, scenario)
 
     async def post_profile(self, kind: str, agent: str = "", developer: str = "",
-                           repo: str = "", repo_label: str = "") -> bool:
+                           repo: str = "", repo_label: str = "", parent: str = "") -> bool:
         """What this node is (axor_wrap.plane.client.PlaneClient.post_profile)."""
         if self._client is None:
             self.connect()
         assert self._client is not None
+        if parent:
+            return await self._client.post_profile(kind, agent, developer, repo, repo_label,
+                                                   parent=parent)
         return await self._client.post_profile(kind, agent, developer, repo, repo_label)
 
     async def post_title(self, title: str) -> bool:
