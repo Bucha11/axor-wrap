@@ -192,6 +192,41 @@ async def test_the_tree_shows_itself_to_the_plane_as_it_goes(workspace) -> None:
                for s in snapshots)
 
 
+async def test_a_slow_snapshot_never_overwrites_a_newer_one(workspace) -> None:
+    """The plane keeps the last snapshot it was sent. Sent side by side, an
+    early one that took longer landed last: the readers vanished from a running
+    tree, and a finished tree was put back to "running" for good."""
+    import asyncio
+    import itertools
+
+    held: dict = {}
+    delays = itertools.cycle([0.05, 0.0, 0.02])
+
+    class _Plane:
+        class connector:  # noqa: N801
+            @staticmethod
+            async def post_tree(snap):
+                await asyncio.sleep(next(delays))
+                held["last"] = snap
+
+            @staticmethod
+            async def post_trace(lines, run_id):
+                pass
+
+        @staticmethod
+        def submit(fn):
+            asyncio.get_event_loop().create_task(fn())
+
+        deliver = submit
+
+    await run_tree(spec(), workspace, plane=_Plane())
+    await asyncio.sleep(0.5)
+    last = held["last"]
+    assert last["status"] == "done"
+    assert len(last["nodes"]["read"]["runs"]) == 5
+    assert all(r["node_id"].startswith("node_") for r in last["nodes"]["read"]["runs"])
+
+
 # ── the free plan: one agent family per tree ──────────────────────────────────
 
 MIXED = {"task": "t", "nodes": {"impl": {"agent": "claude-code"},

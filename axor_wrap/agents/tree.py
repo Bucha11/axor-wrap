@@ -275,6 +275,10 @@ class TreeExecutor(Invokable):
         # readers with no questions to share out — are told apart by order)
         self._asked: dict[str, list[tuple[str, int]]] = {}
         self._bus = _Bus()
+        self._seq = 0
+        self._sent = 0
+        self._latest: dict | None = None
+        self._send_lock: Any = None
 
     # ── the Control-Plane view ───────────────────────────────────────────────
 
@@ -324,8 +328,25 @@ class TreeExecutor(Invokable):
             or getattr(self.plane, "submit", None)
         if post is None or send is None:
             return
-        snap = self.snapshot()
-        send(lambda: post(snap))
+        # Sent one at a time, newest wins: posted side by side, six readers
+        # starting at once raced each other to the plane, and an older
+        # snapshot landing last hid the readers — or put a finished tree back
+        # to "running" for good.
+        self._seq += 1
+        self._latest = {**self.snapshot(), "seq": self._seq}
+        send(lambda: self._send_latest(post))
+
+    async def _send_latest(self, post: Any) -> None:  # noqa: ANN401 - the connector's post_tree
+        import asyncio
+
+        if self._send_lock is None:
+            self._send_lock = asyncio.Lock()   # made on the link's own loop
+        async with self._send_lock:
+            snap = self._latest
+            if snap is None or snap["seq"] <= self._sent:
+                return                          # a newer one already went
+            await post(snap)
+            self._sent = snap["seq"]
 
     def get_bus(self) -> _Bus:
         return self._bus

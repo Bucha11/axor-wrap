@@ -78,6 +78,12 @@
 
 ### Fixed
 
+- **A tree's snapshots reach the plane in order.** They were posted side by
+  side: six readers starting at once raced to the plane, and an older snapshot
+  landing last hid the readers from the running tree (they showed up as loose
+  agents) or put a finished tree back to "running" for good. Snapshots now go
+  one at a time, the newest wins, and each carries a `seq` the plane checks.
+
 - **A page can be opened again in a later session.** A page names itself —
   the README of `authlib-oauth` says "authlib-oauth" — so the shared value
   ledger read its own URL, fetched again the next day, as built from that
