@@ -120,6 +120,30 @@ class DetectTest(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_plain_python_tool_dict(self) -> None:
+        src = (
+            "from axor_wrap.runtime import WrappedToolset, wrap_callables\n"
+            "def read_ticket(path: str, ticket_id: str) -> dict:\n"
+            "    \"\"\"Read a support ticket.\"\"\"\n"
+            "    return {}\n"
+            "def send_email(to: str, body: str) -> dict:\n"
+            "    return {}\n"
+            "TOOLS = {\"read_ticket\": read_ticket, \"send_email\": send_email}\n"
+            "ts = WrappedToolset(TOOLS, [])\n"
+            "again = WrappedToolset(TOOLS, [])\n"
+            "inline = wrap_callables({\"lookup\": lambda **a: a}, [])\n"
+        )
+        root = fixtures.write_project({"agent.py": src})
+        try:
+            tools = {t.id: t for t in scan_project(root)}
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+        self.assertEqual(sorted(tools), ["lookup", "read_ticket", "send_email"])
+        self.assertEqual(tools["read_ticket"].framework, "python")
+        self.assertEqual(tools["read_ticket"].description, "Read a support ticket.")
+        self.assertEqual(tools["send_email"].args_schema["required"], ["to", "body"])
+        self.assertEqual(tools["lookup"].schema_confidence, "low")
+
 
 if __name__ == "__main__":
     unittest.main()
