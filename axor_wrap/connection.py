@@ -48,13 +48,21 @@ def ingest_key() -> str | None:
     return os.environ.get(ENV_KEY) or str(load().get("key") or "") or None
 
 
-def save(url: str, key: str | None) -> Path:
+def save(url: str, key: str | None, *, operator_keys: dict[str, str] | None = None) -> Path:
+    """Keep the plane, its key and — when given — the operators' public keys
+    (axor_wrap.agents.signed). Reconnecting without keys keeps those saved
+    for the same plane: a key is taken away only by disconnecting."""
     p = path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    old = load()
+    keep = old.get("operator_keys") if old.get("url") == url.rstrip("/") else None
+    data: dict = {"url": url.rstrip("/"), "key": key or ""}
+    if operator_keys or keep:
+        data["operator_keys"] = operator_keys or keep
     tmp = p.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"url": url.rstrip("/"), "key": key or ""}, f)
+        json.dump(data, f)
     os.replace(tmp, p)
     return p
 

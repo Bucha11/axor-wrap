@@ -18,6 +18,15 @@
 - **Claude Code goes on with an answer instead of stopping.** A message that
   arrived while the session worked is given at its Stop hook (`decision:
   block`), so two agents can finish a conversation without a person typing.
+- **Signed posture for the coding channel.** `axor-wrap connect --operator-key
+  OP=HEX` (or `AXOR_OPERATOR_KEYS`) keeps operators' public keys in this
+  machine's own config. With them the plane is a messenger: pauses, stops and
+  budgets are verified as commands; what narrows (a skill off, the brake) is
+  taken as it is; what widens — the team's rules, observe mode, exceptions,
+  trusted sources, the skills turned on — comes only from the newest policy an
+  operator signed, and a team skill's files must hash to what it names. The
+  team's memory, notes and other agents' messages that no operator signed are
+  given as outside text: a command built from them is refused.
 - `axor-wrap agents install` registers `axor_pair` (`.mcp.json` /
   `~/.claude.json` for Claude Code, `.codex/config.toml` for Codex);
   `uninstall` removes it.

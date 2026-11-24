@@ -74,6 +74,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_conn = sub.add_parser("connect", help="connect this machine to a Control Plane, once")
     p_conn.add_argument("url", nargs="?", help="the plane's address, e.g. https://plane.useaxor.net")
     p_conn.add_argument("--key", default=None, help="a key from the plane's Connect page")
+    p_conn.add_argument("--operator-key", action="append", default=[], metavar="OP=HEX",
+                        help="an operator's ed25519 public key (repeatable): with one, the "
+                             "sidecar takes only what an operator signed as widening")
     sub.add_parser("disconnect", help="forget this machine's Control Plane")
 
     # coding-agent CLIs (axor_wrap.agents)
@@ -172,9 +175,24 @@ def _cmd_connect(args: argparse.Namespace) -> int:
     except connection.ConnectError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_EMPTY
-    where = connection.save(url, args.key)
+    keys: dict[str, str] = {}
+    for item in args.operator_key:
+        op, _, hexkey = item.partition("=")
+        try:
+            ok = bool(op) and len(bytes.fromhex(hexkey)) == 32
+        except ValueError:
+            ok = False
+        if not ok:
+            print(f"error: --operator-key {item!r} is OP=<64 hex digits>", file=sys.stderr)
+            return EXIT_EMPTY
+        keys[op] = hexkey.lower()
+    where = connection.save(url, args.key, operator_keys=keys or None)
     print(f"connected to {url} — every axor command on this machine reports there "
           f"(saved in {where})")
+    print(f"signed posture: {len(keys)} operator key(s) — rules, team skills and notes "
+          f"widen only when an operator signed them" if keys else
+          "open posture: no operator keys — the plane's word is taken as it is "
+          "(add --operator-key OP=HEX to require signatures)")
     return EXIT_OK
 
 
