@@ -136,6 +136,8 @@ def _cmd_agents(args: argparse.Namespace) -> int:
     if args.agent == "claude-code" and not args.user:
         print("Claude Code asks once before it starts a project's MCP servers: approve "
               "axor_pair when it does.")
+        print("Background sessions work in git worktrees, which hold only what is "
+              "committed: commit .claude/settings.json and .mcp.json, or install with --user.")
     if args.agent == "codex":
         print("Codex runs new hooks only after you review and trust them: run /hooks in codex.")
     if not agent_on_path(args.agent):

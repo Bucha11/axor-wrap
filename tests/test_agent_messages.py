@@ -236,3 +236,27 @@ def test_install_registers_the_server_for_both_agents(tmp_path) -> None:
     assert text.count("[mcp_servers.axor_pair]") == 1 and text.startswith('model = "gpt-5"')
     uninstall_mcp("codex", tmp_path)
     assert "axor_pair" not in toml.read_text() and 'model = "gpt-5"' in toml.read_text()
+
+
+def test_a_worktree_inside_the_repository_shares_its_sidecar(tmp_path) -> None:
+    import os
+    import subprocess
+
+    from axor_wrap.agents.client import workspace_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-c", "user.email=a@b.c", "-c", "user.name=a"]
+    subprocess.run([*git, "init", "-q"], cwd=repo, check=True)
+    (repo / "f").write_text("x")
+    subprocess.run([*git, "add", "f"], cwd=repo, check=True)
+    subprocess.run([*git, "commit", "-qm", "x"], cwd=repo, check=True)
+    inside = repo / ".claude" / "worktrees" / "bg-1"
+    outside = tmp_path / "repo-wt"
+    subprocess.run([*git, "worktree", "add", "-q", str(inside)], cwd=repo, check=True)
+    subprocess.run([*git, "worktree", "add", "-q", str(outside), "-b", "o"], cwd=repo, check=True)
+    main = os.path.realpath(repo)
+    assert workspace_root(str(repo)) == main
+    assert workspace_root(str(inside)) == main
+    assert workspace_root(str(inside / "sub" if (inside / "sub").exists() else inside)) == main
+    assert workspace_root(str(outside)) == os.path.realpath(outside)

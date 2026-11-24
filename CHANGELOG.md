@@ -27,6 +27,11 @@
   operator signed, and a team skill's files must hash to what it names. The
   team's memory, notes and other agents' messages that no operator signed are
   given as outside text: a command built from them is refused.
+- **One sidecar per repository across its worktrees.** A worktree inside the
+  repository (Claude Code's background sessions: `.claude/worktrees/…`) is
+  served by the repository's sidecar, so its sessions share one taint ledger;
+  before, each worktree got its own and what one session fetched was clean in
+  the next. A worktree elsewhere on disk keeps its own sidecar.
 - `axor-wrap agents install` registers `axor_pair` (`.mcp.json` /
   `~/.claude.json` for Claude Code, `.codex/config.toml` for Codex);
   `uninstall` removes it.
