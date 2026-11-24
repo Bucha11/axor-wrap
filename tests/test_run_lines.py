@@ -130,6 +130,8 @@ class HeldTest(unittest.TestCase):
         held = lines[2]
         self.assertEqual(held["verdict"], "deny")
         self.assertEqual(held["payload"]["control"], "agent_stopped")
+        # the answer speaks of the held refund too
+        self.assertIn("refund", lines[-1]["payload"]["claims"]["tools_succeeded"])
 
 
 if __name__ == "__main__":

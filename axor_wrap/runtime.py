@@ -265,7 +265,12 @@ class WrappedToolset:
         if answer is not None:
             from axor_wrap.observe import reconstruct_claim
 
-            claims = reconstruct_claim([r[0] for r in self._ran if r is not None], answer)
+            # what ran, and what the operator held: "refund issued" after a stop
+            # held the refund is an answer about it. A call the rules refused is
+            # left out — that was Axor stopping the agent, not the agent's word.
+            asked = [r[0] for r in self._ran if r is not None]
+            asked += [str(ln["payload"]["tool"]) for _, ln in self._held]  # type: ignore[index]
+            claims = reconstruct_claim(asked, answer)
             lines.append({"kind": "claim", "payload": {"text": answer, "structured": True,
                                                        "claims": claims}})
         return lines
