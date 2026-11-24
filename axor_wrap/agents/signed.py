@@ -113,3 +113,36 @@ def fingerprint(keys: dict[str, str]) -> str:
     line = "\n".join(sorted(f"{op}={str(k).lower()}" for op, k in keys.items()))
     digest = hashlib.sha256(line.encode()).hexdigest()[:16]
     return " ".join(digest[i:i + 4] for i in range(0, 16, 4))
+
+
+# kept in a keyset whose every key was revoked, so a verifier stays in the
+# signed posture (nothing verifies) instead of falling back to the open one
+NOBODY = {"(none: every operator key revoked)": "00" * 32}
+
+
+def apply_operators(keys: dict[str, str], operators: Any,  # noqa: ANN401
+                    revoked: set[str]) -> dict[str, str]:
+    """Extend ``keys`` by the endorsed keys an already-trusted operator vouched
+    for (transitively), and drop the revoked — the plane's word, which only
+    narrows. ``revoked`` accumulates: a key dropped once is never added back.
+    Never returns an empty keyset: see :data:`NOBODY`."""
+    out = {k: v for k, v in keys.items() if k not in NOBODY}
+    if isinstance(operators, dict):
+        revoked.update(str(r) for r in operators.get("revoked") or [])
+        pending = [e for e in operators.get("endorsed") or [] if isinstance(e, dict)]
+        grew = True
+        while grew:
+            grew = False
+            for e in list(pending):
+                op, pubkey = str(e.get("operator", "")), str(e.get("pubkey", "")).lower()
+                endorsement = e.get("endorsement")
+                payload = verify({k: v for k, v in out.items() if k not in revoked},
+                                 endorsement)
+                if payload and payload.get("kind") == "operator_key" \
+                        and payload.get("operator") == op and payload.get("pubkey") == pubkey \
+                        and op not in revoked and endorsement.get("operator") != op:
+                    out[op] = pubkey
+                    pending.remove(e)
+                    grew = True
+    out = {k: v for k, v in out.items() if k not in revoked}
+    return out or dict(NOBODY)

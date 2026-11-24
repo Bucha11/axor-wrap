@@ -27,6 +27,11 @@
   operator signed, and a team skill's files must hash to what it names. The
   team's memory, notes and other agents' messages that no operator signed are
   given as outside text: a command built from them is refused.
+- **Operators' browser keys, by vouch.** A sidecar in the signed posture adds
+  an operator key the plane lists only when a key it already trusts vouched
+  for it (transitively), drops a revoked one for good, and shares the keyset
+  with its plane links so commands verify against it too. Revoking every key
+  leaves it trusting nobody — never back in the open posture.
 - `axor-wrap connect` prints the operator keys' fingerprint (the plane's
   Connect page shows the same), and reconnecting to the same plane without
   `--key` keeps the saved key — adding operator keys is one command.

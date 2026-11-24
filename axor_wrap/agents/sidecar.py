@@ -233,6 +233,10 @@ class Sidecar:
             else dict(operator_keys)
         # the newest signed policy seen: an older one is never taken again
         self._policy_seq = 0
+        # once in the signed posture, always: revoking every key leaves a
+        # sidecar that trusts nobody, never one that trusts the plane
+        self.signed_posture = bool(self.operator_keys)
+        self._revoked_operators: set[str] = set()
         # ONE ledger for every agent in the workspace: a value one agent fetched
         # is the same value in another's call. What a session's MODEL was shown
         # (the context root, its trusted values, its outstanding secrets) is its
@@ -388,6 +392,16 @@ class Sidecar:
             _log.warning("axor: no Control-Plane link for %s: %s", node_id, exc)
             return None
 
+    def _share_keys(self) -> None:
+        """The keyset as it now stands, to every session's plane link — its
+        commands (pause, stop, budget) are verified with the same keys."""
+        for session in list(self.sessions.values()):
+            plane = getattr(getattr(session.link, "connector", None), "session", None)
+            held = getattr(plane, "operator_pubkeys", None)
+            if isinstance(held, dict):
+                held.clear()
+                held.update(self.operator_keys)
+
     def _policy(self, link: Any, *, force: bool = False) -> tuple[dict | None, bool]:
         """The organization's coding policy, asked of the plane at most every
         POLICY_TTL seconds through a session's link: (the answer, whether it
@@ -404,8 +418,12 @@ class Sidecar:
                 answer = None
         if isinstance(answer, dict):
             policy = answer
-            if self.operator_keys:
-                from axor_wrap.agents.signed import trusted_policy
+            if self.signed_posture:
+                from axor_wrap.agents.signed import apply_operators, trusted_policy
+
+                self.operator_keys = apply_operators(
+                    self.operator_keys, answer.get("operators"), self._revoked_operators)
+                self._share_keys()
 
                 policy, self._policy_seq, _ = trusted_policy(
                     self.operator_keys, answer, self._policy_seq)
@@ -436,7 +454,7 @@ class Sidecar:
         # signed posture: a skill's files must hash to what the signed policy names
         digests = ({str(s.get("name")): str(s.get("sha256") or "")
                     for s in (policy or {}).get("skills_team") or [] if isinstance(s, dict)}
-                   if self.operator_keys else None)
+                   if self.signed_posture else None)
 
         async def fetch_and_install() -> None:
             from axor_wrap.agents.signed import bundle_digest
@@ -482,7 +500,7 @@ class Sidecar:
         link.submit(lambda: link.connector.post_memory_given(repo, ids))
         if not text:
             return answer
-        if self.operator_keys:
+        if self.signed_posture:
             # no operator signed it: outside text, given as a suggestion
             from axor_core.contracts.taint import TaintSource
             from axor_core.taint.causal_root import CausalRoot
@@ -536,14 +554,14 @@ class Sidecar:
         for n in notes:
             text = str(n.get("text", ""))
             unsigned = False
-            if self.operator_keys and not n.get("from_node"):
+            if self.signed_posture and not n.get("from_node"):
                 from axor_wrap.agents.signed import signed_note
 
                 # signed posture: a note no operator signed is outside text
                 unsigned = not signed_note(self.operator_keys, n, session.node_id)
             if n.get("from_node"):
                 lines.append(self._agent_message_line(session, n, text,
-                                                       floor=bool(self.operator_keys)))
+                                                       floor=self.signed_posture))
             elif n.get("outside") or unsigned:
                 session.taint.register_value(text, CausalRoot(
                     sources=frozenset({TaintSource.UNKNOWN_EXTERNAL})))

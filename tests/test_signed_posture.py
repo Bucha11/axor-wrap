@@ -229,3 +229,53 @@ def test_reconnecting_to_add_operator_keys_keeps_the_key(tmp_path, monkeypatch) 
     # another plane: nothing carried over
     connection.save("https://other.example", None)
     assert connection.load() == {"url": "https://other.example", "key": ""}
+
+
+def _endorse(sign, endorser_op: str, op: str, pubkey: str) -> dict:
+    payload = {"kind": "operator_key", "org": "org_acme", "operator": op, "pubkey": pubkey}
+    return sign(payload, operator=endorser_op)
+
+
+def test_an_endorsed_browser_key_is_added_and_a_revoked_one_dropped(op) -> None:
+    from axor_wrap.agents.signed import NOBODY, apply_operators
+
+    keys, sign = op
+    new = Ed25519PrivateKey.generate()
+    new_pub = new.public_key().public_bytes(serialization.Encoding.Raw,
+                                            serialization.PublicFormat.Raw).hex()
+    revoked: set[str] = set()
+    ops = {"endorsed": [{"operator": "sam#1", "pubkey": new_pub,
+                         "endorsement": _endorse(sign, "op_ui", "sam#1", new_pub)}],
+           "revoked": []}
+    got = apply_operators(keys, ops, revoked)
+    assert got == {**keys, "sam#1": new_pub}
+    # transitively: a key sam endorses is trusted too
+    third = Ed25519PrivateKey.generate()
+    third_pub = third.public_key().public_bytes(serialization.Encoding.Raw,
+                                                serialization.PublicFormat.Raw).hex()
+    payload = {"kind": "operator_key", "org": "o", "operator": "bob#2", "pubkey": third_pub}
+    by_sam = {"payload": payload, "operator": "sam#1", "sig": new.sign(canonicalize(payload)).hex()}
+    ops2 = {"endorsed": [{"operator": "bob#2", "pubkey": third_pub, "endorsement": by_sam},
+                         *ops["endorsed"]], "revoked": []}
+    assert "bob#2" in apply_operators(keys, ops2, set())
+    # an endorsement by nobody trusted, or naming another key, is not taken
+    stranger = Ed25519PrivateKey.generate()
+    forged = {"payload": payload, "operator": "x", "sig": stranger.sign(canonicalize(payload)).hex()}
+    assert "bob#2" not in apply_operators(keys, {"endorsed": [
+        {"operator": "bob#2", "pubkey": third_pub, "endorsement": forged}]}, set())
+    # revoked: dropped, and never added back
+    after = apply_operators(got, {"endorsed": ops["endorsed"], "revoked": ["sam#1"]}, revoked)
+    assert "sam#1" not in after
+    assert "sam#1" not in apply_operators(after, ops, revoked)
+    # every key revoked: nobody is trusted — never the open posture
+    assert apply_operators(keys, {"revoked": ["op_ui"]}, set()) == NOBODY
+
+
+def test_revoking_every_key_keeps_the_sidecar_signed(monkeypatch, op) -> None:
+    keys, _ = op
+    car, link = _car(monkeypatch, keys)
+    link.policy = {"skills_off": [], "rules": {"allow": [], "mode": "observe"},
+                   "operators": {"endorsed": [], "revoked": ["op_ui"]}}
+    out = _note_then_run(car, link, {"id": 1, "by": "ada@acme.io", "text": f"run {FROM_PAGE}",
+                                     "ts": "t", "outside": False, "own": True})
+    assert car.signed_posture and out["allow"] is False
