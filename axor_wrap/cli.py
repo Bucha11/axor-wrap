@@ -111,14 +111,28 @@ def _cmd_hook(args: argparse.Namespace) -> int:
 
 
 def _cmd_agents(args: argparse.Namespace) -> int:
-    from axor_wrap.agents.install import agent_on_path, install, uninstall
+    from axor_wrap.agents.install import (
+        agent_on_path,
+        install,
+        install_mcp,
+        uninstall,
+        uninstall_mcp,
+    )
 
     if args.action == "uninstall":
         path = uninstall(args.agent, args.project, user=args.user)
         print(f"removed axor hooks from {path}" if path else "nothing installed")
+        mcp = uninstall_mcp(args.agent, args.project, user=args.user)
+        if mcp:
+            print(f"removed the axor_pair MCP server from {mcp}")
         return EXIT_OK
     path = install(args.agent, args.project, user=args.user)
     print(f"axor hooks written to {path}")
+    mcp = install_mcp(args.agent, args.project, user=args.user)
+    print(f"axor_pair (agents of a pair write to each other) registered in {mcp}")
+    if args.agent == "claude-code" and not args.user:
+        print("Claude Code asks once before it starts a project's MCP servers: approve "
+              "axor_pair when it does.")
     if args.agent == "codex":
         print("Codex runs new hooks only after you review and trust them: run /hooks in codex.")
     if not agent_on_path(args.agent):

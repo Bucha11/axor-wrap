@@ -412,6 +412,27 @@ class PlaneConnector:
         assert self._client is not None
         return await self._client.get_notes()
 
+    async def get_peers(self) -> list[dict] | None:
+        """(PlaneClient.get_peers)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.get_peers()
+
+    async def send_agent_message(self, to: str, text: str, taint: list[str]) -> dict:
+        """(PlaneClient.send_agent_message)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.send_agent_message(to, text, taint)
+
+    async def get_agent_thread(self, peer: str) -> list[dict] | None:
+        """(PlaneClient.get_agent_thread)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.get_agent_thread(peer)
+
     async def post_notes_delivered(self, ids: list[int], at: str) -> bool:
         """(PlaneClient.post_notes_delivered)."""
         if self._client is None:

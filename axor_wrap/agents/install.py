@@ -86,3 +86,77 @@ def uninstall(agent: str, project: Path, *, user: bool = False) -> Path | None:
 
 def agent_on_path(agent: str) -> bool:
     return shutil.which("claude" if agent == "claude-code" else "codex") is not None
+
+
+# ── axor_pair: the MCP server agents of a pair write to each other through ────
+
+MCP_NAME = "axor_pair"
+_TOML_OPEN = f"# >>> {MCP_NAME} (axor-wrap)"
+_TOML_CLOSE = f"# <<< {MCP_NAME} (axor-wrap)"
+
+
+def mcp_command() -> tuple[str, list[str]]:
+    return sys.executable, ["-m", "axor_wrap.agents.pair_mcp"]
+
+
+def mcp_config_path(agent: str, project: Path, user: bool) -> Path:
+    home = Path.home()
+    if agent == "claude-code":
+        # user scope lives in ~/.claude.json; a project's servers in .mcp.json
+        return home / ".claude.json" if user else project / ".mcp.json"
+    if agent == "codex":
+        return (home if user else project) / ".codex" / "config.toml"
+    raise ValueError(f"unknown agent {agent!r}")
+
+
+def _strip_toml_block(text: str) -> str:
+    start = text.find(_TOML_OPEN)
+    end = text.find(_TOML_CLOSE)
+    if start == -1 or end == -1 or end < start:
+        return text
+    return (text[:start].rstrip("\n") + "\n" + text[end + len(_TOML_CLOSE):].lstrip("\n")
+            ).lstrip("\n")
+
+
+def install_mcp(agent: str, project: Path, *, user: bool = False) -> Path:
+    """Register axor_pair with the agent CLI. Idempotent; every other server
+    is kept. A Codex config that already names ``mcp_servers.axor_pair`` by
+    hand is left alone."""
+    path = mcp_config_path(agent, project, user)
+    command, args = mcp_command()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if agent == "claude-code":
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data.setdefault("mcpServers", {})[MCP_NAME] = {
+            "type": "stdio", "command": command, "args": args}
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        return path
+    text = _strip_toml_block(path.read_text(encoding="utf-8")) if path.exists() else ""
+    if f"[mcp_servers.{MCP_NAME}]" in text:
+        return path
+    block = "\n".join([_TOML_OPEN, f"[mcp_servers.{MCP_NAME}]",
+                       f"command = {json.dumps(command)}",
+                       f"args = {json.dumps(args)}", _TOML_CLOSE, ""])
+    path.write_text((text.rstrip("\n") + "\n\n" if text.strip() else "") + block,
+                    encoding="utf-8")
+    return path
+
+
+def uninstall_mcp(agent: str, project: Path, *, user: bool = False) -> Path | None:
+    path = mcp_config_path(agent, project, user)
+    if not path.exists():
+        return None
+    if agent == "claude-code":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        servers = data.get("mcpServers") or {}
+        if MCP_NAME not in servers:
+            return None
+        del servers[MCP_NAME]
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        return path
+    text = path.read_text(encoding="utf-8")
+    stripped = _strip_toml_block(text)
+    if stripped == text:
+        return None
+    path.write_text(stripped, encoding="utf-8")
+    return path

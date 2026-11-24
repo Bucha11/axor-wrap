@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Agents of a pair write to each other (`axor_pair`).** A new MCP server
+  (`python -m axor_wrap.agents.pair_mcp`) gives Claude Code and Codex three
+  tools: `peers`, `send`, `thread`. A Claude agent writes to a Codex one and
+  back; a peer is another session of the same developer, or a teammate's
+  session joined by a pair on the Control Plane. The MCP server only carries
+  the call: the sidecar saw it in the PreToolUse hook, knows the session, and
+  sends it — a call the hook never saw is refused.
+- **Taint travels with the message.** The sender's sidecar attaches what its
+  ledger found in the text; the receiver's registers it with that origin, so a
+  message built from a web page arrives as web content and cannot drive a
+  command — on another machine, under another provider.
+- **Claude Code goes on with an answer instead of stopping.** A message that
+  arrived while the session worked is given at its Stop hook (`decision:
+  block`), so two agents can finish a conversation without a person typing.
+- `axor-wrap agents install` registers `axor_pair` (`.mcp.json` /
+  `~/.claude.json` for Claude Code, `.codex/config.toml` for Codex);
+  `uninstall` removes it.
+
 ## 0.4.0 — 2026-11-23
 
 The sidecar stops being one developer's guard and becomes the team's: it reads
