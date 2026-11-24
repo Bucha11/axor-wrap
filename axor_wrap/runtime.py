@@ -137,6 +137,7 @@ class WrappedToolset:
             )
         self.enforcement = enforcement
         self._recorder = SessionRecorder() if record else None
+        self._by_tool = {str(m.get("id")): m for m in self.manifests}
         if task:
             self.register_task(task)
 
@@ -255,7 +256,8 @@ class WrappedToolset:
         # taints the ledger exactly as it would have — which is the whole point
         # of measuring what an UNGOVERNED agent actually does.
         output = self._tools[name](**args)
-        self._governor.register_output(decision, output)  # type: ignore[attr-defined]
+        self._governor.register_output(  # type: ignore[attr-defined]
+            decision, outside_part(self._by_tool.get(name), output))
         if recorded is not None:
             recorded.executed, recorded.result = True, output
         return output
@@ -340,3 +342,59 @@ def wrap_callables(
         task=task,
     )
     return toolset.callables()
+
+
+def _field_values(node: object, path: str) -> list[object] | None:
+    """The values at ``path`` (``text``, ``messages[].body``) in an answer, or
+    None when the answer has no such field at all."""
+    if path in ("", "*"):
+        return [node]
+    head, _, rest = path.partition(".")
+    if head.endswith("[]"):
+        items = node.get(head[:-2]) if isinstance(node, dict) else None
+        if not isinstance(items, list):
+            return None
+        found = [f for f in (_field_values(i, rest) for i in items) if f is not None]
+        if items and not found:
+            return None
+        return [v for f in found for v in f]
+    if not isinstance(node, dict) or head not in node:
+        return None
+    return _field_values(node[head], rest)
+
+
+def _leaves(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [x for v in value.values() for x in _leaves(v)]
+    if isinstance(value, list):
+        return [x for v in value for x in _leaves(v)]
+    return [] if value is None or isinstance(value, bool) else [str(value)]
+
+
+def outside_part(manifest: dict | None, output: object) -> object:
+    """What of a tool's answer goes into the ledger as the answer.
+
+    ``untrusted_fields`` names the parts a stranger could have written — a
+    ticket's ``text``, not the ``from`` the mail system stamped on it. With the
+    whole answer registered, every value in it was outside text: the
+    customer's own address (which the agent must reply to, and which a trusted
+    CRM lookup returns as well) was refused like the address the ticket asked
+    data to be sent to. ``result.*`` / ``result`` is the whole answer, as
+    before, and so is an answer lacking a named field: a changed shape must
+    not quietly turn outside text clean. The text is joined from the fields'
+    string leaves, because the ledger matches fragments inside a string.
+    """
+    patterns = [str(p) for p in ((manifest or {}).get("untrusted_fields") or [])]
+    paths = [p[len("result."):] if p.startswith("result.") else ("" if p == "result" else p)
+             for p in patterns]
+    if not paths or any(p in ("", "*") for p in paths) or not isinstance(output, (dict, list)):
+        return output
+    parts: list[object] = []
+    for path in paths:
+        values = _field_values(output, path)
+        if values is None:
+            return output
+        parts.extend(values)
+    return "\n".join(x for v in parts for x in _leaves(v))
