@@ -78,6 +78,7 @@ class WrappedToolset:
         inputs: dict[str, object] | None = None,
         node_id: str = "",
         task: str | None = None,
+        experiment: object | None = None,
     ) -> None:
         """``governor`` overrides construction (tests / custom kernels); otherwise
         the governor is built lazily-imported from axor-core with the kwargs
@@ -115,7 +116,13 @@ class WrappedToolset:
         for a caller assembling a ``DecisionTrace`` or pushing
         :meth:`kernel_events` for a named node.
 
-        ``task`` is what the user asked for (see :meth:`register_task`)."""
+        ``task`` is what the user asked for (see :meth:`register_task`).
+
+        ``experiment`` is the test bench's fault plan for this run (an
+        ``axor_wrap.observe.Experiment``, from ``take_pending_experiment``): a
+        faulted tool is still checked first, then broken, and the fault is in
+        :meth:`run_lines` beside its call. Applied outside the toolset, the
+        broken call was neither checked nor on the plane at all."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
         self.policy = dict(policy) if policy else None
@@ -138,9 +145,11 @@ class WrappedToolset:
         self.enforcement = enforcement
         self._recorder = SessionRecorder() if record else None
         self._by_tool = {str(m.get("id")): m for m in self.manifests}
-        # per kernel verdict, in order: (tool, "ok" | "error", kernel recorded a result)
-        # for a call that ran; None for one refused before it ran
-        self._ran: list[tuple[str, str, bool] | None] = []
+        self.experiment = experiment
+        # per kernel verdict, in order: (tool, "ok" | "error", kernel recorded a
+        # result, the fault the test bench injected) for a call that ran; None
+        # for one refused before it ran
+        self._ran: list[tuple[str, str, bool, dict | None] | None] = []
         if task:
             self.register_task(task)
 
@@ -236,6 +245,8 @@ class WrappedToolset:
                     lines.append(pending)
                 ran = next(calls, None)
                 pending = None
+                if ran is not None and ran[3]:
+                    lines.append({"kind": "fault_injected", "payload": dict(ran[3])})
                 if ran is not None and not ran[2]:
                     ref = f"r{len(lines)}"
                     pending = {"kind": "tool_result", "causal_root": ref,
@@ -305,17 +316,24 @@ class WrappedToolset:
         # register_output still runs, so a denied-but-executed call's output
         # taints the ledger exactly as it would have — which is the whole point
         # of measuring what an UNGOVERNED agent actually does.
+        exp = self.experiment
+        faulted = exp is not None and bool(exp.mode_for(name))  # type: ignore[attr-defined]
+        skipped = faulted and exp.skips_tool(name)  # type: ignore[union-attr]
         try:
-            output = self._tools[name](**args)
+            output = None if skipped else self._tools[name](**args)
         except Exception:
-            self._ran.append((name, "error", False))
+            self._ran.append((name, "error", False, None))
             raise
         # a governor that keeps no trace (a stand-in) recorded no result either
         before = len(getattr(self._governor, "trace_events", ()))
-        self._governor.register_output(  # type: ignore[attr-defined]
-            decision, outside_part(self._by_tool.get(name), output))
+        if not skipped:  # nothing came back from a tool that never ran
+            self._governor.register_output(  # type: ignore[attr-defined]
+                decision, outside_part(self._by_tool.get(name), output))
+        fault = None
+        if faulted:
+            output, fault = exp.apply(name, output)  # type: ignore[union-attr]
         self._ran.append((name, "error" if isinstance(output, dict) and output.get("error") else "ok",
-                          len(getattr(self._governor, "trace_events", ())) > before))
+                          len(getattr(self._governor, "trace_events", ())) > before, fault))
         if recorded is not None:
             recorded.executed, recorded.result = True, output
         return output
