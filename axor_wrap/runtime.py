@@ -310,11 +310,12 @@ class WrappedToolset:
         except Exception:
             self._ran.append((name, "error", False))
             raise
-        before = len(self._governor.trace_events)  # type: ignore[attr-defined]
+        # a governor that keeps no trace (a stand-in) recorded no result either
+        before = len(getattr(self._governor, "trace_events", ()))
         self._governor.register_output(  # type: ignore[attr-defined]
             decision, outside_part(self._by_tool.get(name), output))
         self._ran.append((name, "error" if isinstance(output, dict) and output.get("error") else "ok",
-                          len(self._governor.trace_events) > before))  # type: ignore[attr-defined]
+                          len(getattr(self._governor, "trace_events", ())) > before))
         if recorded is not None:
             recorded.executed, recorded.result = True, output
         return output
