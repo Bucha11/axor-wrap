@@ -209,3 +209,23 @@ def test_bundle_digest_vector_matches_the_plane() -> None:
              {"path": "release/scripts/notes.sh", "content": "git log -5"}]
     assert bundle_digest(files) == \
         "3e774240029dd52e0f0e74aecadd2f2f79dc1a3bbf12438bf0658a79852b2d6a"
+
+
+def test_fingerprint_vector_matches_the_plane() -> None:
+    from axor_wrap.agents.signed import fingerprint
+
+    assert fingerprint({"op_ui": "00" * 32}) == "37e2 7997 122c ceb8"
+    assert fingerprint({}) == ""
+
+
+def test_reconnecting_to_add_operator_keys_keeps_the_key(tmp_path, monkeypatch) -> None:
+    from axor_wrap import connection
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    connection.save("https://plane.example", "ak_secret")
+    connection.save("https://plane.example", None, operator_keys={"op_ui": "00" * 32})
+    saved = connection.load()
+    assert saved["key"] == "ak_secret" and saved["operator_keys"] == {"op_ui": "00" * 32}
+    # another plane: nothing carried over
+    connection.save("https://other.example", None)
+    assert connection.load() == {"url": "https://other.example", "key": ""}

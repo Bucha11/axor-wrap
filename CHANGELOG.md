@@ -27,6 +27,9 @@
   operator signed, and a team skill's files must hash to what it names. The
   team's memory, notes and other agents' messages that no operator signed are
   given as outside text: a command built from them is refused.
+- `axor-wrap connect` prints the operator keys' fingerprint (the plane's
+  Connect page shows the same), and reconnecting to the same plane without
+  `--key` keeps the saved key — adding operator keys is one command.
 - **One sidecar per repository across its worktrees.** A worktree inside the
   repository (Claude Code's background sessions: `.claude/worktrees/…`) is
   served by the repository's sidecar, so its sessions share one taint ledger;

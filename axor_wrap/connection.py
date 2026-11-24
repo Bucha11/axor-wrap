@@ -50,13 +50,16 @@ def ingest_key() -> str | None:
 
 def save(url: str, key: str | None, *, operator_keys: dict[str, str] | None = None) -> Path:
     """Keep the plane, its key and — when given — the operators' public keys
-    (axor_wrap.agents.signed). Reconnecting without keys keeps those saved
-    for the same plane: a key is taken away only by disconnecting."""
+    (axor_wrap.agents.signed). Reconnecting to the same plane without them
+    keeps what was saved: a key is taken away only by disconnecting."""
     p = path()
     p.parent.mkdir(parents=True, exist_ok=True)
     old = load()
-    keep = old.get("operator_keys") if old.get("url") == url.rstrip("/") else None
-    data: dict = {"url": url.rstrip("/"), "key": key or ""}
+    same = old.get("url") == url.rstrip("/")
+    keep = old.get("operator_keys") if same else None
+    # reconnecting to the same plane without --key (to add operator keys)
+    # keeps the key it had
+    data: dict = {"url": url.rstrip("/"), "key": key or (str(old.get("key") or "") if same else "")}
     if operator_keys or keep:
         data["operator_keys"] = operator_keys or keep
     tmp = p.with_suffix(".tmp")

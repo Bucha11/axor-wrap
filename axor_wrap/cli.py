@@ -172,8 +172,11 @@ def _cmd_connect(args: argparse.Namespace) -> int:
     url = args.url.rstrip("/")
     if "://" not in url:
         url = f"https://{url}"
+    saved = connection.load()
+    key = args.key or (str(saved.get("key") or "") or None
+                       if saved.get("url") == url else None)
     try:
-        connection.check(url, args.key)
+        connection.check(url, key)
     except connection.ConnectError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_EMPTY
@@ -188,11 +191,14 @@ def _cmd_connect(args: argparse.Namespace) -> int:
             print(f"error: --operator-key {item!r} is OP=<64 hex digits>", file=sys.stderr)
             return EXIT_EMPTY
         keys[op] = hexkey.lower()
-    where = connection.save(url, args.key, operator_keys=keys or None)
+    where = connection.save(url, key, operator_keys=keys or None)
     print(f"connected to {url} — every axor command on this machine reports there "
           f"(saved in {where})")
-    print(f"signed posture: {len(keys)} operator key(s) — rules, team skills and notes "
-          f"widen only when an operator signed them" if keys else
+    from axor_wrap.agents.signed import fingerprint
+
+    print(f"signed posture: {len(keys)} operator key(s), fingerprint {fingerprint(keys)} — "
+          f"compare it with the plane's Connect page; rules, team skills and notes widen "
+          f"only when an operator signed them" if keys else
           "open posture: no operator keys — the plane's word is taken as it is "
           "(add --operator-key OP=HEX to require signatures)")
     return EXIT_OK

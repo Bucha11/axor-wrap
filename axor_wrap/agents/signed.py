@@ -103,3 +103,13 @@ def signed_note(keys: dict[str, str], note: dict, node_id: str) -> bool:
     payload = verify(keys, note.get("signed"))
     return bool(payload) and payload.get("kind") == "note" \
         and payload.get("node_id") == node_id and payload.get("text") == note.get("text")
+
+
+def fingerprint(keys: dict[str, str]) -> str:
+    """A short digest of a keyset to compare by eye — the same the plane's
+    Connect page shows (axor_backend.signing.fingerprint)."""
+    if not keys:
+        return ""
+    line = "\n".join(sorted(f"{op}={str(k).lower()}" for op, k in keys.items()))
+    digest = hashlib.sha256(line.encode()).hexdigest()[:16]
+    return " ".join(digest[i:i + 4] for i in range(0, 16, 4))
