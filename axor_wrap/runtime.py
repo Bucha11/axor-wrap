@@ -138,7 +138,9 @@ class WrappedToolset:
         self.enforcement = enforcement
         self._recorder = SessionRecorder() if record else None
         self._by_tool = {str(m.get("id")): m for m in self.manifests}
-        self._ran: list[tuple[str, str]] = []  # (tool, "ok" | "error"), in order
+        # per kernel verdict, in order: (tool, "ok" | "error", kernel recorded a result)
+        # for a call that ran; None for one refused before it ran
+        self._ran: list[tuple[str, str, bool] | None] = []
         if task:
             self.register_task(task)
 
@@ -213,7 +215,7 @@ class WrappedToolset:
         the plane audits it against. Assembled by hand, this was two dozen
         lines in every plain-Python agent.
         """
-        lines: list[dict[str, object]] = []
+        kernel: list[dict[str, object]] = []
         for e in self.kernel_events():
             line: dict[str, object] = {"kind": e.kind.value, "payload": dict(e.payload)}  # type: ignore[attr-defined]
             if getattr(e, "verdict", None) is not None:
@@ -222,20 +224,29 @@ class WrappedToolset:
                 line["gate"] = e.gate  # type: ignore[attr-defined]
             if getattr(e, "causal_root", None):
                 line["causal_root"] = e.causal_root  # type: ignore[attr-defined]
+            kernel.append(line)
+        # each result right after its call (and the kernel's own lines for it):
+        # appended at the end, a timeline read "called everything, then heard back"
+        lines: list[dict[str, object]] = []
+        pending: dict[str, object] | None = None
+        calls = iter(self._ran)
+        for line in kernel:
+            if line["kind"] == "tool_call":
+                if pending is not None:
+                    lines.append(pending)
+                ran = next(calls, None)
+                pending = None
+                if ran is not None and not ran[2]:
+                    ref = f"r{len(lines)}"
+                    pending = {"kind": "tool_result", "causal_root": ref,
+                               "payload": {"tool": ran[0], "status": ran[1], "value_ref": ref}}
             lines.append(line)
-        recorded = [str(ln["payload"].get("tool")) for ln in lines  # type: ignore[union-attr]
-                    if ln["kind"] == "tool_result"]
-        for i, (tool, status) in enumerate(self._ran):
-            if tool in recorded:
-                recorded.remove(tool)
-                continue
-            ref = f"r{i}"
-            lines.append({"kind": "tool_result", "causal_root": ref,
-                          "payload": {"tool": tool, "status": status, "value_ref": ref}})
+        if pending is not None:
+            lines.append(pending)
         if answer is not None:
             from axor_wrap.observe import reconstruct_claim
 
-            claims = reconstruct_claim([t for t, _ in self._ran], answer)
+            claims = reconstruct_claim([r[0] for r in self._ran if r is not None], answer)
             lines.append({"kind": "claim", "payload": {"text": answer, "structured": True,
                                                        "claims": claims}})
         return lines
@@ -288,6 +299,7 @@ class WrappedToolset:
         # this line (unknown tool, admission held) produced no verdict either.
         recorded = self._recorder.evaluated(name, args) if self._recorder else None
         if not decision.allowed and self.enforcement == ENFORCEMENT_ON:
+            self._ran.append(None)
             raise ToolDenied(decision.reason, decision.category)
         # observe-only: the verdict is recorded and reported, the call proceeds.
         # register_output still runs, so a denied-but-executed call's output
@@ -296,11 +308,13 @@ class WrappedToolset:
         try:
             output = self._tools[name](**args)
         except Exception:
-            self._ran.append((name, "error"))
+            self._ran.append((name, "error", False))
             raise
-        self._ran.append((name, "error" if isinstance(output, dict) and output.get("error") else "ok"))
+        before = len(self._governor.trace_events)  # type: ignore[attr-defined]
         self._governor.register_output(  # type: ignore[attr-defined]
             decision, outside_part(self._by_tool.get(name), output))
+        self._ran.append((name, "error" if isinstance(output, dict) and output.get("error") else "ok",
+                          len(self._governor.trace_events) > before))  # type: ignore[attr-defined]
         if recorded is not None:
             recorded.executed, recorded.result = True, output
         return output
