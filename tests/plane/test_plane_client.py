@@ -165,3 +165,25 @@ def test_the_default_run_id_is_unique_per_process() -> None:
     # An explicitly chosen run id is still honoured verbatim.
     pinned = PlaneClient("http://b", PlaneSession(node_id="n1"), run_id="my-run")
     assert pinned._run_id == "my-run"
+
+
+async def test_an_agent_says_whether_it_is_a_test_bench(monkeypatch) -> None:  # noqa: ANN001
+    """The plane offers to break a production agent's tools only when the agent
+    itself said no real user is behind it."""
+    import httpx
+
+    seen: list = []
+
+    async def fake_post(self, url, json=None, **kw):  # noqa: ANN001, ANN202, A002
+        seen.append(json)
+        return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    bench = PlaneClient("http://plane.test", PlaneSession(node_id="n1", test_bench=True))
+    live = PlaneClient("http://plane.test", PlaneSession(node_id="n2"))
+    await bench.post_profile("agent", agent="axor-wrap")
+    await live.post_profile("agent", agent="axor-wrap")
+    await live.post_profile("coding", developer="d1")
+    assert seen[0]["test_bench"] is True
+    assert seen[1]["test_bench"] is False
+    assert "test_bench" not in seen[2]

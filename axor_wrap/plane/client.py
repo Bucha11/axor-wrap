@@ -210,7 +210,10 @@ class PlaneClient:
                     json={"kind": kind, "agent": agent, "developer": developer,
                           **({"repo": repo, "repo_label": repo_label} if repo else {}),
                           # a subagent: the session that started it
-                          **({"parent": parent} if parent else {})},
+                          **({"parent": parent} if parent else {}),
+                          # a production agent says whether it is a test bench, so
+                          # the plane offers to break its tools only when it is
+                          **({"test_bench": bool(self.session.test_bench)} if kind == "agent" else {})},
                     headers=self._auth(),
                 )
         except httpx.HTTPError:
