@@ -48,6 +48,13 @@ def ingest_key() -> str | None:
     return os.environ.get(ENV_KEY) or str(load().get("key") or "") or None
 
 
+def saved_key(url: str) -> str | None:
+    """The key saved for this same plane: reconnecting without --key (to add
+    operator keys) keeps it."""
+    old = load()
+    return str(old.get("key") or "") or None if old.get("url") == url.rstrip("/") else None
+
+
 def save(url: str, key: str | None, *, operator_keys: dict[str, str] | None = None) -> Path:
     """Keep the plane, its key and — when given — the operators' public keys
     (axor_wrap.agents.signed). Reconnecting to the same plane without them
@@ -55,11 +62,8 @@ def save(url: str, key: str | None, *, operator_keys: dict[str, str] | None = No
     p = path()
     p.parent.mkdir(parents=True, exist_ok=True)
     old = load()
-    same = old.get("url") == url.rstrip("/")
-    keep = old.get("operator_keys") if same else None
-    # reconnecting to the same plane without --key (to add operator keys)
-    # keeps the key it had
-    data: dict = {"url": url.rstrip("/"), "key": key or (str(old.get("key") or "") if same else "")}
+    keep = old.get("operator_keys") if old.get("url") == url.rstrip("/") else None
+    data: dict = {"url": url.rstrip("/"), "key": key or saved_key(url) or ""}
     if operator_keys or keep:
         data["operator_keys"] = operator_keys or keep
     tmp = p.with_suffix(".tmp")

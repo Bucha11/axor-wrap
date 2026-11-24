@@ -172,9 +172,7 @@ def _cmd_connect(args: argparse.Namespace) -> int:
     url = args.url.rstrip("/")
     if "://" not in url:
         url = f"https://{url}"
-    saved = connection.load()
-    key = args.key or (str(saved.get("key") or "") or None
-                       if saved.get("url") == url else None)
+    key = args.key or connection.saved_key(url)
     try:
         connection.check(url, key)
     except connection.ConnectError as exc:

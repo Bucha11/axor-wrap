@@ -237,7 +237,7 @@ def _endorse(sign, endorser_op: str, op: str, pubkey: str) -> dict:
 
 
 def test_an_endorsed_browser_key_is_added_and_a_revoked_one_dropped(op) -> None:
-    from axor_wrap.agents.signed import NOBODY, apply_operators
+    from axor_wrap.agents.signed import apply_operators
 
     keys, sign = op
     new = Ed25519PrivateKey.generate()
@@ -267,8 +267,10 @@ def test_an_endorsed_browser_key_is_added_and_a_revoked_one_dropped(op) -> None:
     after = apply_operators(got, {"endorsed": ops["endorsed"], "revoked": ["sam#1"]}, revoked)
     assert "sam#1" not in after
     assert "sam#1" not in apply_operators(after, ops, revoked)
-    # every key revoked: nobody is trusted — never the open posture
-    assert apply_operators(keys, {"revoked": ["op_ui"]}, set()) == NOBODY
+    # revoking the middle of a chain drops what was trusted only through it
+    assert "bob#2" not in apply_operators(keys, {**ops2, "revoked": ["sam#1"]}, set())
+    # every key revoked: nobody is trusted
+    assert apply_operators(keys, {"revoked": ["op_ui"]}, set()) == {}
 
 
 def test_revoking_every_key_keeps_the_sidecar_signed(monkeypatch, op) -> None:
@@ -279,3 +281,43 @@ def test_revoking_every_key_keeps_the_sidecar_signed(monkeypatch, op) -> None:
     out = _note_then_run(car, link, {"id": 1, "by": "ada@acme.io", "text": f"run {FROM_PAGE}",
                                      "ts": "t", "outside": False, "own": True})
     assert car.signed_posture and out["allow"] is False
+
+
+def test_a_plane_session_with_every_key_revoked_applies_nothing_unsigned() -> None:
+    from axor_wrap.plane.session import PlaneSession
+
+    open_session = PlaneSession(node_id="n")
+    assert open_session._verify(1, {"paused": True}, "op", "t", "") is None
+    signed = PlaneSession(node_id="n", require_signed=True)
+    assert signed._verify(1, {"paused": True}, "op", "t", "") is not None
+
+
+def test_the_sidecar_shares_one_keyset_with_its_links(monkeypatch, op) -> None:
+    keys, _ = op
+    seen: dict = {}
+
+    class _Link:
+        def __init__(self, url, node_id, operator_keys=None, require_signed=False):
+            seen.update(keys=operator_keys, require=require_signed)
+
+    monkeypatch.setattr("axor_wrap.plane.link.PlaneLink", _Link)
+    car = Sidecar("/repo", plane_url="http://plane", operator_keys=keys)
+    car._open_link("n1")
+    assert seen["keys"] is car.operator_keys and seen["require"] is True
+
+
+def test_operator_keys_from_the_environment_win(tmp_path, monkeypatch) -> None:
+    import json as _json
+
+    from axor_wrap import connection
+    from axor_wrap.agents.signed import operator_keys
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    connection.save("https://plane.example", "k", operator_keys={"saved": "00" * 32})
+    monkeypatch.delenv("AXOR_OPERATOR_KEYS", raising=False)
+    assert operator_keys() == {"saved": "00" * 32}
+    monkeypatch.setenv("AXOR_OPERATOR_KEYS", _json.dumps({"ci": "11" * 32}))
+    assert operator_keys() == {"ci": "11" * 32}
+    # unreadable: the saved keys, never none
+    monkeypatch.setenv("AXOR_OPERATOR_KEYS", "not json")
+    assert operator_keys() == {"saved": "00" * 32}

@@ -219,6 +219,7 @@ class PlaneConnector:
         node_id: str,
         *,
         operator_keys: dict[str, str] | None = None,
+        require_signed: bool = False,
         run_id: str | None = None,
         local_budget_cap: int | None = None,
         test_bench: bool = False,
@@ -227,7 +228,11 @@ class PlaneConnector:
     ) -> None:
         self.backend_url = backend_url.rstrip("/")
         self.node_id = node_id
-        self._operator_keys = dict(operator_keys or {})
+        # the caller's own dict, not a copy: a keyset it changes (a coding
+        # sidecar adding a vouched key, dropping a revoked one) is the one
+        # this node's commands verify against
+        self._operator_keys = operator_keys if operator_keys is not None else {}
+        self._require_signed = require_signed
         self._run_id = run_id
         self._local_budget_cap = local_budget_cap
         self._test_bench = test_bench
@@ -278,6 +283,7 @@ class PlaneConnector:
         self.session = plane_session_cls(
             node_id=self.node_id,
             operator_pubkeys=self._operator_keys,
+            require_signed=self._require_signed,
             test_bench=self._test_bench,
             local_budget_cap=self._local_budget_cap,
         )

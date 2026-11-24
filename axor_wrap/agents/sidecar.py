@@ -229,13 +229,18 @@ class Sidecar:
         self._link_factory = link_factory
         # operator public keys from LOCAL config (axor_wrap.agents.signed): with
         # them, what widens must be signed and unsigned context is outside text
-        self.operator_keys = signed.operator_keys() if operator_keys is None \
+        # the keys this machine's own config names: trust is worked out from
+        # them on every policy fetch (signed.apply_operators)
+        self._root_keys = signed.operator_keys() if operator_keys is None \
             else dict(operator_keys)
+        # ONE dict, shared with every session's plane link: their commands
+        # verify against the keyset as it now stands
+        self.operator_keys: dict[str, str] = dict(self._root_keys)
         # the newest signed policy seen: an older one is never taken again
         self._policy_seq = 0
         # once in the signed posture, always: revoking every key leaves a
         # sidecar that trusts nobody, never one that trusts the plane
-        self.signed_posture = bool(self.operator_keys)
+        self.signed_posture = bool(self._root_keys)
         self._revoked_operators: set[str] = set()
         # ONE ledger for every agent in the workspace: a value one agent fetched
         # is the same value in another's call. What a session's MODEL was shown
@@ -386,21 +391,11 @@ class Sidecar:
         try:
             from axor_wrap.plane.link import PlaneLink
 
-            return PlaneLink(self.plane_url, node_id,
-                             operator_keys=self.operator_keys or None)
+            return PlaneLink(self.plane_url, node_id, operator_keys=self.operator_keys,
+                             require_signed=self.signed_posture)
         except Exception as exc:  # noqa: BLE001 - a plane outage must not stop the agent
             _log.warning("axor: no Control-Plane link for %s: %s", node_id, exc)
             return None
-
-    def _share_keys(self) -> None:
-        """The keyset as it now stands, to every session's plane link — its
-        commands (pause, stop, budget) are verified with the same keys."""
-        for session in list(self.sessions.values()):
-            plane = getattr(getattr(session.link, "connector", None), "session", None)
-            held = getattr(plane, "operator_pubkeys", None)
-            if isinstance(held, dict):
-                held.clear()
-                held.update(self.operator_keys)
 
     def _policy(self, link: Any, *, force: bool = False) -> tuple[dict | None, bool]:
         """The organization's coding policy, asked of the plane at most every
@@ -421,9 +416,10 @@ class Sidecar:
             if self.signed_posture:
                 from axor_wrap.agents.signed import apply_operators, trusted_policy
 
-                self.operator_keys = apply_operators(
-                    self.operator_keys, answer.get("operators"), self._revoked_operators)
-                self._share_keys()
+                trusted = apply_operators(self._root_keys, answer.get("operators"),
+                                          self._revoked_operators)
+                self.operator_keys.clear()
+                self.operator_keys.update(trusted)
 
                 policy, self._policy_seq, _ = trusted_policy(
                     self.operator_keys, answer, self._policy_seq)

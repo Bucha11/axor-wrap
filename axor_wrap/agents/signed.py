@@ -36,8 +36,14 @@ def operator_keys() -> dict[str, str]:
         try:
             value = json.loads(raw)
         except ValueError:
-            return {}
-        return {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
+            value = None
+        if isinstance(value, dict):
+            return {str(k): str(v) for k, v in value.items()}
+        # unreadable: never a silent fall to the open posture — the saved keys
+        import logging
+
+        logging.getLogger("axor.wrap.agents.signed").warning(
+            "%s is not a JSON object of operator keys — using the saved ones", ENV_KEYS)
     from axor_wrap import connection
 
     saved = connection.load().get("operator_keys")
@@ -115,34 +121,30 @@ def fingerprint(keys: dict[str, str]) -> str:
     return " ".join(digest[i:i + 4] for i in range(0, 16, 4))
 
 
-# kept in a keyset whose every key was revoked, so a verifier stays in the
-# signed posture (nothing verifies) instead of falling back to the open one
-NOBODY = {"(none: every operator key revoked)": "00" * 32}
-
-
-def apply_operators(keys: dict[str, str], operators: Any,  # noqa: ANN401
+def apply_operators(roots: dict[str, str], operators: Any,  # noqa: ANN401
                     revoked: set[str]) -> dict[str, str]:
-    """Extend ``keys`` by the endorsed keys an already-trusted operator vouched
-    for (transitively), and drop the revoked — the plane's word, which only
-    narrows. ``revoked`` accumulates: a key dropped once is never added back.
-    Never returns an empty keyset: see :data:`NOBODY`."""
-    out = {k: v for k, v in keys.items() if k not in NOBODY}
+    """The keys to trust now: the ROOTS (this machine's own config) and every
+    key the plane lists that a trusted key vouched for, worked out from the
+    roots each time — so revoking a key also drops every key trusted only
+    through it. Revoked keys (the plane's word; it only narrows) accumulate in
+    ``revoked`` and are never trusted again, roots included."""
     if isinstance(operators, dict):
         revoked.update(str(r) for r in operators.get("revoked") or [])
-        pending = [e for e in operators.get("endorsed") or [] if isinstance(e, dict)]
-        grew = True
-        while grew:
-            grew = False
-            for e in list(pending):
-                op, pubkey = str(e.get("operator", "")), str(e.get("pubkey", "")).lower()
-                endorsement = e.get("endorsement")
-                payload = verify({k: v for k, v in out.items() if k not in revoked},
-                                 endorsement)
-                if payload and payload.get("kind") == "operator_key" \
-                        and payload.get("operator") == op and payload.get("pubkey") == pubkey \
-                        and op not in revoked and endorsement.get("operator") != op:
-                    out[op] = pubkey
-                    pending.remove(e)
-                    grew = True
-    out = {k: v for k, v in out.items() if k not in revoked}
-    return out or dict(NOBODY)
+        listed = [e for e in operators.get("endorsed") or [] if isinstance(e, dict)]
+    else:
+        listed = []
+    out = {k: v for k, v in roots.items() if k not in revoked}
+    grew = True
+    while grew:
+        grew = False
+        for e in listed:
+            op, pubkey = str(e.get("operator", "")), str(e.get("pubkey", "")).lower()
+            if op in out or op in revoked:
+                continue
+            endorsement = e.get("endorsement")
+            payload = verify(out, endorsement)
+            if payload and payload.get("kind") == "operator_key" \
+                    and payload.get("operator") == op and payload.get("pubkey") == pubkey:
+                out[op] = pubkey
+                grew = True
+    return out
