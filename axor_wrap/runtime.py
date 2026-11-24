@@ -138,6 +138,7 @@ class WrappedToolset:
         self.enforcement = enforcement
         self._recorder = SessionRecorder() if record else None
         self._by_tool = {str(m.get("id")): m for m in self.manifests}
+        self._ran: list[tuple[str, str]] = []  # (tool, "ok" | "error"), in order
         if task:
             self.register_task(task)
 
@@ -202,6 +203,43 @@ class WrappedToolset:
         node = node_id if node_id is not None else (self.node_id or None)
         return list(trace_to_kernel(self.trace_events, node))  # type: ignore[arg-type]
 
+    def run_lines(self, answer: str | None = None) -> list[dict[str, object]]:
+        """This run as plane trace lines, ready for ``PlaneConnector.post_ingest``.
+
+        The kernel's events as dicts, a ``tool_result`` for every call that
+        ran and the kernel recorded no result for (a clean read registers
+        nothing, so without it the plane saw no answer behind the agent's
+        "refund issued"), and — given the agent's ``answer`` — the ``claim``
+        the plane audits it against. Assembled by hand, this was two dozen
+        lines in every plain-Python agent.
+        """
+        lines: list[dict[str, object]] = []
+        for e in self.kernel_events():
+            line: dict[str, object] = {"kind": e.kind.value, "payload": dict(e.payload)}  # type: ignore[attr-defined]
+            if getattr(e, "verdict", None) is not None:
+                line["verdict"] = e.verdict.value  # type: ignore[attr-defined]
+            if getattr(e, "gate", None):
+                line["gate"] = e.gate  # type: ignore[attr-defined]
+            if getattr(e, "causal_root", None):
+                line["causal_root"] = e.causal_root  # type: ignore[attr-defined]
+            lines.append(line)
+        recorded = [str(ln["payload"].get("tool")) for ln in lines  # type: ignore[union-attr]
+                    if ln["kind"] == "tool_result"]
+        for i, (tool, status) in enumerate(self._ran):
+            if tool in recorded:
+                recorded.remove(tool)
+                continue
+            ref = f"r{i}"
+            lines.append({"kind": "tool_result", "causal_root": ref,
+                          "payload": {"tool": tool, "status": status, "value_ref": ref}})
+        if answer is not None:
+            from axor_wrap.observe import reconstruct_claim
+
+            claims = reconstruct_claim([t for t, _ in self._ran], answer)
+            lines.append({"kind": "claim", "payload": {"text": answer, "structured": True,
+                                                       "claims": claims}})
+        return lines
+
     def callables(self) -> dict[str, Callable[..., object]]:
         """This toolset as drop-in ``{name: callable}``, all sharing THIS session.
 
@@ -255,7 +293,12 @@ class WrappedToolset:
         # register_output still runs, so a denied-but-executed call's output
         # taints the ledger exactly as it would have — which is the whole point
         # of measuring what an UNGOVERNED agent actually does.
-        output = self._tools[name](**args)
+        try:
+            output = self._tools[name](**args)
+        except Exception:
+            self._ran.append((name, "error"))
+            raise
+        self._ran.append((name, "error" if isinstance(output, dict) and output.get("error") else "ok"))
         self._governor.register_output(  # type: ignore[attr-defined]
             decision, outside_part(self._by_tool.get(name), output))
         if recorded is not None:
