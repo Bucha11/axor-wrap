@@ -99,5 +99,38 @@ class ExperimentTest(unittest.TestCase):
                                ("tool_result", "issue_refund"), ("claim", None)])
 
 
+class HeldTest(unittest.TestCase):
+    setUp = RunLinesTest.setUp
+
+    def test_a_call_a_stop_held_is_on_the_record_where_it_was_made(self) -> None:
+        from axor_wrap.errors import AdmissionHeld
+
+        class _Session:
+            stopped = True
+
+        class _Node:
+            session = _Session()
+            open = True
+
+            def admit(self) -> bool:
+                return self.open
+
+        node = _Node()
+        ts = WrappedToolset({"lookup": lambda **a: 1, "refund": lambda **a: 2},
+                            [_m("lookup", "READ"), _m("refund", "WRITE", side=True)], node_id="n")
+        ts.set_admission(node.admit)
+        ts.call("lookup", {})
+        node.open = False
+        with self.assertRaises(AdmissionHeld):
+            ts.call("refund", {"amount": 1})
+        lines = ts.run_lines("Refund issued.")
+        seq = [(ln["kind"], ln["payload"].get("tool")) for ln in lines]
+        self.assertEqual(seq, [("tool_call", "lookup"), ("tool_result", "lookup"),
+                               ("tool_call", "refund"), ("claim", None)])
+        held = lines[2]
+        self.assertEqual(held["verdict"], "deny")
+        self.assertEqual(held["payload"]["control"], "agent_stopped")
+
+
 if __name__ == "__main__":
     unittest.main()

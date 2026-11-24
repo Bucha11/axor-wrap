@@ -150,6 +150,8 @@ class WrappedToolset:
         # result, the fault the test bench injected) for a call that ran; None
         # for one refused before it ran
         self._ran: list[tuple[str, str, bool, dict | None] | None] = []
+        # calls held by a pause / stop, each with how many verdicts came before it
+        self._held: list[tuple[int, dict[str, object]]] = []
         if task:
             self.register_task(task)
 
@@ -235,25 +237,31 @@ class WrappedToolset:
                 line["causal_root"] = e.causal_root  # type: ignore[attr-defined]
             kernel.append(line)
         # each result right after its call (and the kernel's own lines for it):
-        # appended at the end, a timeline read "called everything, then heard back"
-        lines: list[dict[str, object]] = []
-        pending: dict[str, object] | None = None
-        calls = iter(self._ran)
+        # appended at the end, a timeline read "called everything, then heard back".
+        # A call a pause / stop held sits where it was made.
+        prelude: list[dict[str, object]] = []
+        groups: list[list[dict[str, object]]] = []
         for line in kernel:
             if line["kind"] == "tool_call":
-                if pending is not None:
-                    lines.append(pending)
-                ran = next(calls, None)
-                pending = None
-                if ran is not None and ran[3]:
-                    lines.append({"kind": "fault_injected", "payload": dict(ran[3])})
-                if ran is not None and not ran[2]:
-                    ref = f"r{len(lines)}"
-                    pending = {"kind": "tool_result", "causal_root": ref,
-                               "payload": {"tool": ran[0], "status": ran[1], "value_ref": ref}}
-            lines.append(line)
-        if pending is not None:
-            lines.append(pending)
+                groups.append([line])
+            elif groups:
+                groups[-1].append(line)
+            else:
+                prelude.append(line)
+        lines: list[dict[str, object]] = list(prelude)
+        held = list(self._held)
+        for i, group in enumerate(groups):
+            while held and held[0][0] <= i:
+                lines.append(held.pop(0)[1])
+            ran = self._ran[i] if i < len(self._ran) else None
+            if ran is not None and ran[3]:
+                lines.append({"kind": "fault_injected", "payload": dict(ran[3])})
+            lines.extend(group)
+            if ran is not None and not ran[2]:
+                ref = f"r{len(lines)}"
+                lines.append({"kind": "tool_result", "causal_root": ref,
+                              "payload": {"tool": ran[0], "status": ran[1], "value_ref": ref}})
+        lines.extend(line for _, line in held)
         if answer is not None:
             from axor_wrap.observe import reconstruct_claim
 
@@ -303,6 +311,17 @@ class WrappedToolset:
         if name not in self._tools:
             raise UnknownToolError(name, self.tool_names)
         if self._admission is not None and not self._admission():
+            # held by the operator, not judged by the governor: no kernel record
+            # of it, so the line is ours — marked `control`, as the proxy marks
+            # it, so it is not counted among what the rules refused
+            session = getattr(getattr(self._admission, "__self__", None), "session", None)
+            control = "agent_stopped" if getattr(session, "stopped", False) else "agent_paused"
+            self._held.append((len(self._ran), {
+                "kind": "tool_call", "verdict": "deny", "gate": "capability",
+                "payload": {"tool": name, "args": dict(args), "control": control,
+                            "reason": "this agent was stopped from the Control Plane"
+                            if control == "agent_stopped"
+                            else "this agent is paused from the Control Plane"}}))
             raise AdmissionHeld("paused-or-stopped")
         decision = self._governor.evaluate(name, args)  # type: ignore[attr-defined]
         # recorded at the moment the kernel is consulted, so the recorder stays
