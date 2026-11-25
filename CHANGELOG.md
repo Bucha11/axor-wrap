@@ -27,6 +27,11 @@
   operator signed, and a team skill's files must hash to what it names. The
   team's memory, notes and other agents' messages that no operator signed are
   given as outside text: a command built from them is refused.
+- **The conversation reaches the pair feed.** The sidecar sends each request
+  the developer types and what the agent says on the way (read from its
+  transcript — Claude Code's and Codex's — before each call and at stop) as
+  `intent` lines with a `role`; the turn's last word still goes once, as its
+  answer. `AXOR_SHARE_CONVERSATION=0` keeps both on the machine.
 - **Operators' browser keys, by vouch.** A sidecar in the signed posture adds
   an operator key the plane lists only when a key it already trusts vouched
   for it (transitively), drops a revoked one for good, and shares the keyset

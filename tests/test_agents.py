@@ -140,7 +140,9 @@ def test_each_session_is_a_plane_node_with_its_trace(car, links) -> None:
     [link] = links.values()
     assert link.node_id.startswith("claude-code-")
     kinds = [line["kind"] for line in lines_of(link)]
-    assert kinds == ["tool_call", "tool_result", "claim"]
+    # the developer's request opens the turn, its answer closes it
+    assert kinds == ["intent", "tool_call", "tool_result", "claim"]
+    assert lines_of(link)[0]["payload"] == {"role": "developer", "text": "fix the tests"}
     assert lines_of(link)[-1]["payload"]["text"] == "All tests pass now."
 
 

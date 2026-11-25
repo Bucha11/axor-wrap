@@ -169,6 +169,67 @@ def last_assistant_text(transcript_path: str) -> str:
     return ""
 
 
+# what the developer asks and what the agent says on the way go to the plane
+# (the pair feed, Replay) — AXOR_SHARE_CONVERSATION=0 keeps them on this machine;
+# the final answer of a turn is sent either way, as before
+ENV_SHARE_CONVERSATION = "AXOR_SHARE_CONVERSATION"
+_SAID_MAX = 4000
+
+
+def share_conversation() -> bool:
+    return os.environ.get(ENV_SHARE_CONVERSATION, "1").lower() not in ("0", "off", "false", "no")
+
+
+def _said(entry: dict) -> str:
+    """The assistant's text in one transcript line — Claude Code's
+    (``{"type": "assistant", "message": {"content": …}}``) or Codex's
+    (``{"type": "response_item", "payload": {"type": "message", "role":
+    "assistant", "content": [{"type": "output_text", …}]}}``)."""
+    if entry.get("type") == "assistant":
+        content = (entry.get("message") or {}).get("content")
+    elif entry.get("type") == "response_item" and isinstance(entry.get("payload"), dict) \
+            and entry["payload"].get("role") == "assistant":
+        content = entry["payload"].get("content")
+    else:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(str(b.get("text", "")) for b in content if isinstance(b, dict)
+                       and b.get("type") in ("text", "output_text"))
+    return ""
+
+
+def assistant_text_since(transcript_path: str, pos: int) -> tuple[list[str], int]:
+    """What the agent said in its transcript after byte ``pos``, and where the
+    next read starts (after the last whole line)."""
+    try:
+        with open(transcript_path, "rb") as f:
+            f.seek(pos)
+            chunk = f.read()
+    except OSError:
+        return [], pos
+    end = chunk.rfind(b"\n")
+    if end < 0:
+        return [], pos
+    out: list[str] = []
+    for raw in chunk[:end].splitlines():
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and (text := _said(entry).strip()):
+            out.append(text)
+    return out, pos + end + 1
+
+
+def transcript_end(transcript_path: str) -> int:
+    try:
+        return os.path.getsize(transcript_path)
+    except OSError:
+        return 0
+
+
 @dataclass
 class _Session:
     agent: str
@@ -186,6 +247,7 @@ class _Session:
     sources: set = field(default_factory=set)
     last_seen: float = field(default_factory=time.time)
     notes_asked: float = 0.0       # when the plane was last asked for pair notes
+    transcript_pos: int = -1       # where the agent's transcript was last read
     memory_given: bool = False     # the team's memory was given to this session
     plan_said: bool = False        # the developer was told the plan does not show it
     titled: bool = False           # its first request was sent as its title
@@ -708,6 +770,10 @@ class Sidecar:
                 ask = event.tool_input
                 session.launched.append((str(ask.get("subagent_type") or "general-purpose"),
                                          str(ask.get("description") or ask.get("prompt") or "")))
+            if event.kind in ("pre_tool", "stop") and session.parent is None:
+                # what the agent said before this call (or before stopping),
+                # ahead of the call itself in the feed
+                self._agent_said(session, event)
             answer = handler(session, event) if handler else {"allow": True}
             if event.kind in ("session_start", "prompt"):
                 answer = self._with_memory(session, event, answer)
@@ -948,9 +1014,33 @@ class Sidecar:
         self._ship(session)
         return {"allow": True}
 
+    def _agent_said(self, session: _Session, event: HookEvent) -> None:
+        if not event.transcript_path or not share_conversation():
+            return
+        if session.transcript_pos < 0:
+            # first look at this session: what came before is not news
+            session.transcript_pos = transcript_end(event.transcript_path)
+            return
+        texts, session.transcript_pos = assistant_text_since(
+            event.transcript_path, session.transcript_pos)
+        if event.kind == "stop":
+            # the turn's last word goes as its answer (the claim), not twice
+            final = (event.last_message or "").strip()
+            texts = [t for t in texts if t != final] if final else texts[:-1]
+        if texts:
+            self._ship(session, [{"kind": "intent", "payload": {
+                "role": "assistant", "text": t[:_SAID_MAX]}} for t in texts])
+
     def _prompt(self, session: _Session, event: HookEvent) -> dict:
         if session.recorder.active:
             self._finish(session, "")
+        if event.transcript_path:
+            session.transcript_pos = transcript_end(event.transcript_path)
+        if event.prompt and share_conversation():
+            # the developer's request opens the turn — in the pair feed too
+            session.recorder.last_request = event.prompt
+            self._ship(session, [{"kind": "intent", "payload": {
+                "role": "developer", "text": event.prompt[:_SAID_MAX]}}])
         if event.prompt:
             # the user's own words: a destination they named is not tainted
             session.governor.register_task(event.prompt)

@@ -260,3 +260,49 @@ def test_a_worktree_inside_the_repository_shares_its_sidecar(tmp_path) -> None:
     assert workspace_root(str(inside)) == main
     assert workspace_root(str(inside / "sub" if (inside / "sub").exists() else inside)) == main
     assert workspace_root(str(outside)) == os.path.realpath(outside)
+
+
+def test_the_feed_gets_the_request_and_what_the_agent_says_on_the_way(tmp_path, setup) -> None:
+    car, links = setup
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(json.dumps({"type": "assistant", "message": {"content": "old turn"}}) + "\n")
+    tp = str(transcript)
+    car.handle(ev("claude-code", "UserPromptSubmit", prompt="rename the field", transcript_path=tp))
+    link = next(iter(links.values()))
+    shipped: list = []
+    link.connector.post_trace = lambda lines, run_id: _collect(shipped, lines)
+    with transcript.open("a") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Looking at models.py first."}]}}) + "\n")
+    car.handle(ev("claude-code", "PreToolUse", tool_name="Read",
+                  tool_input={"file_path": "models.py"}, tool_use_id="t1", transcript_path=tp))
+    with transcript.open("a") as f:
+        f.write(json.dumps({"type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "output_text", "text": "Renamed it."}]}}) + "\n")
+        f.write(json.dumps({"type": "assistant", "message": {"content": "Done."}}) + "\n")
+    car.handle(ev("claude-code", "Stop", last_assistant_message="Done.", transcript_path=tp))
+    said = [(ln["payload"].get("role"), ln["payload"].get("text")) for ln in shipped
+            if ln["kind"] == "intent"]
+    # the old turn is not news; the final word goes once, as the answer
+    assert said == [("assistant", "Looking at models.py first."), ("assistant", "Renamed it.")]
+
+
+async def _collect_async(shipped, lines):
+    shipped.extend(lines)
+
+
+def _collect(shipped, lines):
+    return _collect_async(shipped, lines)
+
+
+def test_the_conversation_can_stay_on_this_machine(monkeypatch, setup) -> None:
+    monkeypatch.setenv("AXOR_SHARE_CONVERSATION", "0")
+    car, links = setup
+    car.handle(ev("claude-code", "PreToolUse", tool_name="Bash",
+                  tool_input={"command": "ls"}, tool_use_id="t0"))
+    link = next(iter(links.values()))
+    shipped: list = []
+    link.connector.post_trace = lambda lines, run_id: _collect(shipped, lines)
+    car.handle(ev("claude-code", "UserPromptSubmit", prompt="secret plans"))
+    assert not [ln for ln in shipped if ln["kind"] == "intent"]
