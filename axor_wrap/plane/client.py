@@ -347,6 +347,66 @@ class PlaneClient:
             return False
         return response.status_code < 300
 
+    async def get_peers(self) -> list[dict] | None:
+        """The sessions this node's agent may write to (another session of the
+        same developer, or one joined by a pair); None when the plane cannot
+        be asked."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    f"{self._base}/v1/coding/peers/{self.session.node_id}", headers=self._auth())
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 300:
+            return None
+        try:
+            peers = response.json().get("peers")
+        except (ValueError, AttributeError):
+            return None
+        return [p for p in peers if isinstance(p, dict)] if isinstance(peers, list) else None
+
+    async def send_agent_message(self, to: str, text: str, taint: list[str]) -> dict:
+        """This node's agent writes to a peer's agent: the plane's answer
+        (``{id, to, relation, status}``), or ``{"error": ...}``."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._base}/v1/coding/notes/{self.session.node_id}/send",
+                    json={"to": to, "text": text, "taint": taint}, headers=self._auth())
+        except httpx.HTTPError as exc:
+            return {"error": f"the plane cannot be reached: {exc}"}
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if response.status_code >= 300:
+            detail = body.get("detail") if isinstance(body, dict) else None
+            if isinstance(detail, dict):
+                detail = detail.get("detail")
+            return {"error": str(detail or f"the plane answered {response.status_code}")}
+        return body if isinstance(body, dict) else {"error": "an answer the plane never gives"}
+
+    async def get_agent_thread(self, peer: str) -> list[dict] | None:
+        """The latest messages either way between this session and a peer."""
+        httpx = _httpx()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    f"{self._base}/v1/coding/notes/{self.session.node_id}/with/{peer}",
+                    headers=self._auth())
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 300:
+            return None
+        try:
+            messages = response.json().get("messages")
+        except (ValueError, AttributeError):
+            return None
+        return [m for m in messages if isinstance(m, dict)] if isinstance(messages, list) \
+            else None
+
     async def post_skill_bundle(self, name: str, files: list[dict]) -> dict:
         """Upload a skill's files for the team to turn on: the plane's answer
         (``{name, version, check}``), or ``{"error": ...}``."""

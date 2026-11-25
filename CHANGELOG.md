@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Agents of a pair write to each other (`axor_pair`).** A new MCP server
+  (`python -m axor_wrap.agents.pair_mcp`) gives Claude Code and Codex three
+  tools: `peers`, `send`, `thread`. A Claude agent writes to a Codex one and
+  back; a peer is another session of the same developer, or a teammate's
+  session joined by a pair on the Control Plane. The MCP server only carries
+  the call: the sidecar saw it in the PreToolUse hook, knows the session, and
+  sends it — a call the hook never saw is refused.
+- **Taint travels with the message.** The sender's sidecar attaches what its
+  ledger found in the text; the receiver's registers it with that origin, so a
+  message built from a web page arrives as web content and cannot drive a
+  command — on another machine, under another provider.
+- **Claude Code goes on with an answer instead of stopping.** A message that
+  arrived while the session worked is given at its Stop hook (`decision:
+  block`), so two agents can finish a conversation without a person typing.
+- **Signed posture for the coding channel.** `axor-wrap connect --operator-key
+  OP=HEX` (or `AXOR_OPERATOR_KEYS`) keeps operators' public keys in this
+  machine's own config. With them the plane is a messenger: pauses, stops and
+  budgets are verified as commands; what narrows (a skill off, the brake) is
+  taken as it is; what widens — the team's rules, observe mode, exceptions,
+  trusted sources, the skills turned on — comes only from the newest policy an
+  operator signed, and a team skill's files must hash to what it names. The
+  team's memory, notes and other agents' messages that no operator signed are
+  given as outside text: a command built from them is refused.
+- **The conversation reaches the pair feed.** The sidecar sends each request
+  the developer types and what the agent says on the way (read from its
+  transcript — Claude Code's and Codex's — before each call and at stop) as
+  `intent` lines with a `role`; the turn's last word still goes once, as its
+  answer. `AXOR_SHARE_CONVERSATION=0` keeps both on the machine.
+- **Operators' browser keys, by vouch.** A sidecar in the signed posture adds
+  an operator key the plane lists only when a key it already trusts vouched
+  for it (transitively), drops a revoked one for good, and shares the keyset
+  with its plane links so commands verify against it too. Revoking every key
+  leaves it trusting nobody — never back in the open posture.
+- `axor-wrap connect` prints the operator keys' fingerprint (the plane's
+  Connect page shows the same), and reconnecting to the same plane without
+  `--key` keeps the saved key — adding operator keys is one command.
+- **One sidecar per repository across its worktrees.** A worktree inside the
+  repository (Claude Code's background sessions: `.claude/worktrees/…`) is
+  served by the repository's sidecar, so its sessions share one taint ledger;
+  before, each worktree got its own and what one session fetched was clean in
+  the next. A worktree elsewhere on disk keeps its own sidecar.
+- `axor-wrap agents install` registers `axor_pair` (`.mcp.json` /
+  `~/.claude.json` for Claude Code, `.codex/config.toml` for Codex);
+  `uninstall` removes it.
+
 ## 0.4.0 — 2026-11-23
 
 The sidecar stops being one developer's guard and becomes the team's: it reads

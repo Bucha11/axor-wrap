@@ -69,6 +69,9 @@ class PlaneSession:
     # Operator pubkeys come from LOCAL adapter config, never over the channel
     # (protocol section 6) — a compromised backend must not swap keys.
     operator_pubkeys: dict[str, str] = field(default_factory=dict)
+    # signed posture even with no key left (every one revoked): then nothing
+    # verifies, rather than everything applying unsigned
+    require_signed: bool = False
     test_bench: bool = False
     local_budget_cap: int | None = None
 
@@ -117,7 +120,7 @@ class PlaneSession:
         With no operator pubkeys configured (the open dev posture, where nothing
         is signed and the deployment is told so loudly), it stays LWW as before.
         """
-        if not self.operator_pubkeys:
+        if not self.operator_pubkeys and not self.require_signed:
             return self._apply(version, state, signed=False)
 
         verified: list[tuple[int, dict]] = []
@@ -195,7 +198,7 @@ class PlaneSession:
         self, version: int, body: dict, operator: str, timestamp: str, sig: str
     ) -> AppliedEffect | None:
         """None when the signature is good (or nothing is signed here)."""
-        if not self.operator_pubkeys:
+        if not self.operator_pubkeys and not self.require_signed:
             return None
         pubkey = self.operator_pubkeys.get(operator)
         message = _canonical({

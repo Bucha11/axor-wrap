@@ -109,6 +109,13 @@ def render_decision(event: HookEvent, decision: dict) -> tuple[str, int]:
     """(stdout, exit code) answering the agent. Only a PreToolUse can be
     denied; every other event is answered with silence and exit 0 — the hook
     observes, it never breaks the agent."""
+    if event.kind == "stop" and decision.get("continue_with") and event.agent == "claude-code":
+        # something reached the session while it worked (a peer agent's
+        # answer): Claude Code goes on with it instead of stopping
+        out_stop: dict = {"decision": "block", "reason": decision["continue_with"]}
+        if decision.get("user_message"):
+            out_stop["systemMessage"] = decision["user_message"]
+        return json.dumps(out_stop), 0
     if event.kind != "pre_tool" or decision.get("allow", True):
         note = decision.get("note")
         tell = decision.get("user_message")
