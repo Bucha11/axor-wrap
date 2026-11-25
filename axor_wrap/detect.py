@@ -10,6 +10,12 @@ definitions without executing anything:
   name bound via ``x = FastMCP(...)``;
 - **Anthropic-style registries**: dict literals with the ``{name, description,
   input_schema}`` key triple;
+- **plain Python**: the ``{"name": function}`` dict handed to axor-wrap's own
+  ``WrappedToolset(...)`` / ``wrap_callables(...)`` — literal or a module-level
+  name bound to one — each value resolved to the module's function; and, before
+  the agent is wrapped at all, its tool registry — a name with
+  ``tool`` in it (``TOOLS``, ``tool_map``) bound to such a dict whose every
+  value is a function of the module;
 - **implicit shell**: ``subprocess.run/Popen/...`` or ``os.system`` calls inside an
   agent module → one implicit ``shell`` candidate tool per file.
 
@@ -29,6 +35,8 @@ FRAMEWORK_LANGCHAIN = "langchain"
 FRAMEWORK_MCP = "mcp"
 FRAMEWORK_ANTHROPIC = "anthropic"
 FRAMEWORK_IMPLICIT = "implicit"
+FRAMEWORK_PYTHON = "python"
+_WRAP_CALLS = frozenset({"WrappedToolset", "wrap_callables"})
 
 CONFIDENCE_HIGH = "high"
 CONFIDENCE_LOW = "low"
@@ -86,12 +94,18 @@ def _scan_module(tree: ast.Module, rel: str) -> list[DetectedTool]:
     out: list[DetectedTool] = []
     subprocess_hit: tuple[int, str] | None = None
 
+    wrapped: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             tool = _from_decorated_function(node, ctx, rel)
             if tool is not None:
                 out.append(tool)
         elif isinstance(node, ast.Call):
+            plain = _from_wrap_call(node, ctx, rel)
+            if plain:
+                out.extend(t for t in plain if t.id not in wrapped)
+                wrapped.update(t.id for t in plain)
+                continue
             tool = _from_call(node, ctx, rel)
             if tool is not None:
                 out.append(tool)
@@ -103,6 +117,28 @@ def _scan_module(tree: ast.Module, rel: str) -> list[DetectedTool]:
             tool = _from_registry_dict(node, rel)
             if tool is not None:
                 out.append(tool)
+
+    # the agent's own tool registry, not yet handed to axor-wrap: what the scan
+    # is for is finding the tools BEFORE the wrap, so the wrap can be written
+    for name, table in ctx.dicts.items():
+        if "tool" not in name.lower():
+            continue
+        values = list(zip(table.keys, table.values))
+        if not values or not all(isinstance(k, ast.Constant) and isinstance(k.value, str)
+                                 and isinstance(v, ast.Name) and v.id in ctx.functions
+                                 for k, v in values):
+            continue
+        for key, value in values:
+            if key.value in wrapped:  # type: ignore[union-attr]
+                continue
+            fn = ctx.functions[value.id]  # type: ignore[union-attr]
+            schema, confidence = _schema_from_function(fn)
+            out.append(DetectedTool(
+                id=key.value, source=f"{rel}:{fn.lineno} python:{name}",  # type: ignore[union-attr]
+                description=_docstring_summary(fn), args_schema=schema,
+                framework=FRAMEWORK_PYTHON, schema_confidence=confidence,
+            ))
+            wrapped.add(key.value)  # type: ignore[union-attr]
 
     if subprocess_hit is not None:
         line, kind = subprocess_hit
@@ -137,6 +173,7 @@ class _ModuleContext:
     mcp_objects: set[str] = field(default_factory=lambda: set(_MCP_DEFAULT_OBJECTS))
     subprocess_aliases: set[str] = field(default_factory=set)     # `from subprocess import run as r`
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = field(default_factory=dict)
+    dicts: dict[str, ast.Dict] = field(default_factory=dict)  # module-level NAME = {...}
 
     @classmethod
     def collect(cls, tree: ast.Module) -> "_ModuleContext":
@@ -156,6 +193,10 @@ class _ModuleContext:
                     for alias in node.names:
                         if alias.name in _SUBPROCESS_FUNCS:
                             ctx.subprocess_aliases.add(alias.asname or alias.name)
+            elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        ctx.dicts.setdefault(target.id, node.value)
             elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
                 func = node.value.func
                 ctor = func.id if isinstance(func, ast.Name) else (
@@ -206,6 +247,41 @@ def _from_decorated_function(
                 framework=FRAMEWORK_MCP, schema_confidence=confidence,
             )
     return None
+
+
+# ── plain Python: the dict handed to WrappedToolset / wrap_callables ────────────
+
+
+def _from_wrap_call(call: ast.Call, ctx: _ModuleContext, rel: str) -> list[DetectedTool]:
+    func = call.func
+    name = func.id if isinstance(func, ast.Name) else (
+        func.attr if isinstance(func, ast.Attribute) else "")
+    if name not in _WRAP_CALLS or not call.args:
+        return []
+    first = call.args[0]
+    table = first if isinstance(first, ast.Dict) else (
+        ctx.dicts.get(first.id) if isinstance(first, ast.Name) else None)
+    if table is None:
+        return []
+    out: list[DetectedTool] = []
+    for key, value in zip(table.keys, table.values):
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            continue
+        fn = ctx.functions.get(value.id) if isinstance(value, ast.Name) else None
+        if fn is None:
+            out.append(DetectedTool(
+                id=key.value, source=f"{rel}:{table.lineno} python:{name}",
+                description="", args_schema={"type": "object"},
+                framework=FRAMEWORK_PYTHON, schema_confidence=CONFIDENCE_LOW,
+            ))
+            continue
+        schema, confidence = _schema_from_function(fn)
+        out.append(DetectedTool(
+            id=key.value, source=f"{rel}:{fn.lineno} python:{name}",
+            description=_docstring_summary(fn), args_schema=schema,
+            framework=FRAMEWORK_PYTHON, schema_confidence=confidence,
+        ))
+    return out
 
 
 # ── constructor calls (StructuredTool.from_function, Tool(...)) ──────────────────

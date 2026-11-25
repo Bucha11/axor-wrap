@@ -78,6 +78,7 @@ class WrappedToolset:
         inputs: dict[str, object] | None = None,
         node_id: str = "",
         task: str | None = None,
+        experiment: object | None = None,
     ) -> None:
         """``governor`` overrides construction (tests / custom kernels); otherwise
         the governor is built lazily-imported from axor-core with the kwargs
@@ -115,7 +116,13 @@ class WrappedToolset:
         for a caller assembling a ``DecisionTrace`` or pushing
         :meth:`kernel_events` for a named node.
 
-        ``task`` is what the user asked for (see :meth:`register_task`)."""
+        ``task`` is what the user asked for (see :meth:`register_task`).
+
+        ``experiment`` is the test bench's fault plan for this run (an
+        ``axor_wrap.observe.Experiment``, from ``take_pending_experiment``): a
+        faulted tool is still checked first, then broken, and the fault is in
+        :meth:`run_lines` beside its call. Applied outside the toolset, the
+        broken call was neither checked nor on the plane at all."""
         self._tools = dict(tools)
         self.manifests = list(manifests)
         self.policy = dict(policy) if policy else None
@@ -137,6 +144,14 @@ class WrappedToolset:
             )
         self.enforcement = enforcement
         self._recorder = SessionRecorder() if record else None
+        self._by_tool = {str(m.get("id")): m for m in self.manifests}
+        self.experiment = experiment
+        # per kernel verdict, in order: (tool, "ok" | "error", kernel recorded a
+        # result, the fault the test bench injected) for a call that ran; None
+        # for one refused before it ran
+        self._ran: list[tuple[str, str, bool, dict | None] | None] = []
+        # calls held by a pause / stop, each with how many verdicts came before it
+        self._held: list[tuple[int, dict[str, object]]] = []
         if task:
             self.register_task(task)
 
@@ -201,6 +216,65 @@ class WrappedToolset:
         node = node_id if node_id is not None else (self.node_id or None)
         return list(trace_to_kernel(self.trace_events, node))  # type: ignore[arg-type]
 
+    def run_lines(self, answer: str | None = None) -> list[dict[str, object]]:
+        """This run as plane trace lines, ready for ``PlaneConnector.post_ingest``.
+
+        The kernel's events as dicts, a ``tool_result`` for every call that
+        ran and the kernel recorded no result for (a clean read registers
+        nothing, so without it the plane saw no answer behind the agent's
+        "refund issued"), and — given the agent's ``answer`` — the ``claim``
+        the plane audits it against. Assembled by hand, this was two dozen
+        lines in every plain-Python agent.
+        """
+        kernel: list[dict[str, object]] = []
+        for e in self.kernel_events():
+            line: dict[str, object] = {"kind": e.kind.value, "payload": dict(e.payload)}  # type: ignore[attr-defined]
+            if getattr(e, "verdict", None) is not None:
+                line["verdict"] = e.verdict.value  # type: ignore[attr-defined]
+            if getattr(e, "gate", None):
+                line["gate"] = e.gate  # type: ignore[attr-defined]
+            if getattr(e, "causal_root", None):
+                line["causal_root"] = e.causal_root  # type: ignore[attr-defined]
+            kernel.append(line)
+        # each result right after its call (and the kernel's own lines for it):
+        # appended at the end, a timeline read "called everything, then heard back".
+        # A call a pause / stop held sits where it was made.
+        prelude: list[dict[str, object]] = []
+        groups: list[list[dict[str, object]]] = []
+        for line in kernel:
+            if line["kind"] == "tool_call":
+                groups.append([line])
+            elif groups:
+                groups[-1].append(line)
+            else:
+                prelude.append(line)
+        lines: list[dict[str, object]] = list(prelude)
+        held = list(self._held)
+        for i, group in enumerate(groups):
+            while held and held[0][0] <= i:
+                lines.append(held.pop(0)[1])
+            ran = self._ran[i] if i < len(self._ran) else None
+            if ran is not None and ran[3]:
+                lines.append({"kind": "fault_injected", "payload": dict(ran[3])})
+            lines.extend(group)
+            if ran is not None and not ran[2]:
+                ref = f"r{len(lines)}"
+                lines.append({"kind": "tool_result", "causal_root": ref,
+                              "payload": {"tool": ran[0], "status": ran[1], "value_ref": ref}})
+        lines.extend(line for _, line in held)
+        if answer is not None:
+            from axor_wrap.observe import reconstruct_claim
+
+            # what ran, and what the operator held: "refund issued" after a stop
+            # held the refund is an answer about it. A call the rules refused is
+            # left out — that was Axor stopping the agent, not the agent's word.
+            asked = [r[0] for r in self._ran if r is not None]
+            asked += [str(ln["payload"]["tool"]) for _, ln in self._held]  # type: ignore[index]
+            claims = reconstruct_claim(asked, answer)
+            lines.append({"kind": "claim", "payload": {"text": answer, "structured": True,
+                                                       "claims": claims}})
+        return lines
+
     def callables(self) -> dict[str, Callable[..., object]]:
         """This toolset as drop-in ``{name: callable}``, all sharing THIS session.
 
@@ -242,6 +316,17 @@ class WrappedToolset:
         if name not in self._tools:
             raise UnknownToolError(name, self.tool_names)
         if self._admission is not None and not self._admission():
+            # held by the operator, not judged by the governor: no kernel record
+            # of it, so the line is ours — marked `control`, as the proxy marks
+            # it, so it is not counted among what the rules refused
+            session = getattr(getattr(self._admission, "__self__", None), "session", None)
+            control = "agent_stopped" if getattr(session, "stopped", False) else "agent_paused"
+            self._held.append((len(self._ran), {
+                "kind": "tool_call", "verdict": "deny", "gate": "capability",
+                "payload": {"tool": name, "args": dict(args), "control": control,
+                            "reason": "this agent was stopped from the Control Plane"
+                            if control == "agent_stopped"
+                            else "this agent is paused from the Control Plane"}}))
             raise AdmissionHeld("paused-or-stopped")
         decision = self._governor.evaluate(name, args)  # type: ignore[attr-defined]
         # recorded at the moment the kernel is consulted, so the recorder stays
@@ -249,13 +334,30 @@ class WrappedToolset:
         # this line (unknown tool, admission held) produced no verdict either.
         recorded = self._recorder.evaluated(name, args) if self._recorder else None
         if not decision.allowed and self.enforcement == ENFORCEMENT_ON:
+            self._ran.append(None)
             raise ToolDenied(decision.reason, decision.category)
         # observe-only: the verdict is recorded and reported, the call proceeds.
         # register_output still runs, so a denied-but-executed call's output
         # taints the ledger exactly as it would have — which is the whole point
         # of measuring what an UNGOVERNED agent actually does.
-        output = self._tools[name](**args)
-        self._governor.register_output(decision, output)  # type: ignore[attr-defined]
+        exp = self.experiment
+        faulted = exp is not None and bool(exp.mode_for(name))  # type: ignore[attr-defined]
+        skipped = faulted and exp.skips_tool(name)  # type: ignore[union-attr]
+        try:
+            output = None if skipped else self._tools[name](**args)
+        except Exception:
+            self._ran.append((name, "error", False, None))
+            raise
+        # a governor that keeps no trace (a stand-in) recorded no result either
+        before = len(getattr(self._governor, "trace_events", ()))
+        if not skipped:  # nothing came back from a tool that never ran
+            self._governor.register_output(  # type: ignore[attr-defined]
+                decision, outside_part(self._by_tool.get(name), output))
+        fault = None
+        if faulted:
+            output, fault = exp.apply(name, output)  # type: ignore[union-attr]
+        self._ran.append((name, "error" if isinstance(output, dict) and output.get("error") else "ok",
+                          len(getattr(self._governor, "trace_events", ())) > before, fault))
         if recorded is not None:
             recorded.executed, recorded.result = True, output
         return output
@@ -340,3 +442,59 @@ def wrap_callables(
         task=task,
     )
     return toolset.callables()
+
+
+def _field_values(node: object, path: str) -> list[object] | None:
+    """The values at ``path`` (``text``, ``messages[].body``) in an answer, or
+    None when the answer has no such field at all."""
+    if path in ("", "*"):
+        return [node]
+    head, _, rest = path.partition(".")
+    if head.endswith("[]"):
+        items = node.get(head[:-2]) if isinstance(node, dict) else None
+        if not isinstance(items, list):
+            return None
+        found = [f for f in (_field_values(i, rest) for i in items) if f is not None]
+        if items and not found:
+            return None
+        return [v for f in found for v in f]
+    if not isinstance(node, dict) or head not in node:
+        return None
+    return _field_values(node[head], rest)
+
+
+def _leaves(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [x for v in value.values() for x in _leaves(v)]
+    if isinstance(value, list):
+        return [x for v in value for x in _leaves(v)]
+    return [] if value is None or isinstance(value, bool) else [str(value)]
+
+
+def outside_part(manifest: dict | None, output: object) -> object:
+    """What of a tool's answer goes into the ledger as the answer.
+
+    ``untrusted_fields`` names the parts a stranger could have written — a
+    ticket's ``text``, not the ``from`` the mail system stamped on it. With the
+    whole answer registered, every value in it was outside text: the
+    customer's own address (which the agent must reply to, and which a trusted
+    CRM lookup returns as well) was refused like the address the ticket asked
+    data to be sent to. ``result.*`` / ``result`` is the whole answer, as
+    before, and so is an answer lacking a named field: a changed shape must
+    not quietly turn outside text clean. The text is joined from the fields'
+    string leaves, because the ledger matches fragments inside a string.
+    """
+    patterns = [str(p) for p in ((manifest or {}).get("untrusted_fields") or [])]
+    paths = [p[len("result."):] if p.startswith("result.") else ("" if p == "result" else p)
+             for p in patterns]
+    if not paths or any(p in ("", "*") for p in paths) or not isinstance(output, (dict, list)):
+        return output
+    parts: list[object] = []
+    for path in paths:
+        values = _field_values(output, path)
+        if values is None:
+            return output
+        parts.extend(values)
+    return "\n".join(x for v in parts for x in _leaves(v))

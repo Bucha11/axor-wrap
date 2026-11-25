@@ -245,6 +245,7 @@ class PlaneConnector:
         self.session: PlaneSession | None = None
         self._client: PlaneClient | None = None
         self._stop: asyncio.Event | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None  # start(): the node's own loop
 
     # ── posture (source of truth for level + admission) ───────────────────────
 
@@ -483,5 +484,41 @@ class PlaneConnector:
 
     def stop(self) -> None:
         """Signal :meth:`run` to wind the node down. Idempotent."""
-        if self._stop is not None:
+        if self._stop is None:
+            return
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._stop.set)
+        else:
             self._stop.set()
+
+    # ── a synchronous agent ───────────────────────────────────────────────────
+
+    def start(self) -> PlaneConnector:
+        """Keep the node live from a synchronous agent: :meth:`run` on an event
+        loop of its own, in a daemon thread. Returns the connector.
+
+        :meth:`run` wants the caller's event loop, and the snippet that said
+        "inside your event loop" was the whole of the instructions: an agent
+        written as plain functions had none, and no way in short of writing
+        this. With ``start()``, call the plane's coroutines through
+        :meth:`submit`."""
+        import threading
+
+        if self._loop is not None:
+            return self
+        if self.session is None:
+            self.connect()
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        threading.Thread(target=loop.run_forever, daemon=True,
+                         name=f"axor-plane-{self.node_id}").start()
+        asyncio.run_coroutine_threadsafe(self.run(), loop)
+        return self
+
+    def submit(self, coro: object, timeout: float = 60.0) -> object:
+        """Run one of the plane's coroutines (``post_ingest``, ``post_profile``,
+        ``post_health_check``…) from synchronous code, on the loop :meth:`start`
+        runs, and return its result."""
+        if self._loop is None:
+            raise RuntimeError("call start() first: submit() runs on the node's own loop")
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)  # type: ignore[arg-type]
