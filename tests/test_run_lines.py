@@ -136,3 +136,11 @@ class HeldTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClaimWordsTest(unittest.TestCase):
+    def test_could_not_admits_the_failure(self) -> None:
+        from axor_wrap.observe import reconstruct_claim
+
+        self.assertEqual(reconstruct_claim(["search"], "I could not find anything.")["tools_succeeded"], [])
+        self.assertEqual(reconstruct_claim(["search"], "Found three results.")["tools_succeeded"], ["search"])
