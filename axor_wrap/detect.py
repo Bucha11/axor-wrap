@@ -12,7 +12,10 @@ definitions without executing anything:
   input_schema}`` key triple;
 - **plain Python**: the ``{"name": function}`` dict handed to axor-wrap's own
   ``WrappedToolset(...)`` / ``wrap_callables(...)`` — literal or a module-level
-  name bound to one — each value resolved to the module's function;
+  name bound to one — each value resolved to the module's function; and, before
+  the agent is wrapped at all, its tool registry — a name with
+  ``tool`` in it (``TOOLS``, ``tool_map``) bound to such a dict whose every
+  value is a function of the module;
 - **implicit shell**: ``subprocess.run/Popen/...`` or ``os.system`` calls inside an
   agent module → one implicit ``shell`` candidate tool per file.
 
@@ -114,6 +117,28 @@ def _scan_module(tree: ast.Module, rel: str) -> list[DetectedTool]:
             tool = _from_registry_dict(node, rel)
             if tool is not None:
                 out.append(tool)
+
+    # the agent's own tool registry, not yet handed to axor-wrap: what the scan
+    # is for is finding the tools BEFORE the wrap, so the wrap can be written
+    for name, table in ctx.dicts.items():
+        if "tool" not in name.lower():
+            continue
+        values = list(zip(table.keys, table.values))
+        if not values or not all(isinstance(k, ast.Constant) and isinstance(k.value, str)
+                                 and isinstance(v, ast.Name) and v.id in ctx.functions
+                                 for k, v in values):
+            continue
+        for key, value in values:
+            if key.value in wrapped:  # type: ignore[union-attr]
+                continue
+            fn = ctx.functions[value.id]  # type: ignore[union-attr]
+            schema, confidence = _schema_from_function(fn)
+            out.append(DetectedTool(
+                id=key.value, source=f"{rel}:{fn.lineno} python:{name}",  # type: ignore[union-attr]
+                description=_docstring_summary(fn), args_schema=schema,
+                framework=FRAMEWORK_PYTHON, schema_confidence=confidence,
+            ))
+            wrapped.add(key.value)  # type: ignore[union-attr]
 
     if subprocess_hit is not None:
         line, kind = subprocess_hit

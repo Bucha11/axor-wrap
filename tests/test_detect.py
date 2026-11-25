@@ -144,6 +144,31 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(tools["send_email"].args_schema["required"], ["to", "body"])
         self.assertEqual(tools["lookup"].schema_confidence, "low")
 
+    def test_a_tool_registry_before_the_wrap(self) -> None:
+        """Connect asks for the agent's files before it is wrapped: its tools
+        then sit in its own registry, not yet in WrappedToolset(...)."""
+        src = (
+            "def fetch_page(url: str) -> dict:\n"
+            "    \"\"\"Fetch a web page's text.\"\"\"\n"
+            "    return {}\n"
+            "def send_report(to: str, body: str) -> dict:\n"
+            "    return {}\n"
+            "TOOLS = {\"fetch_page\": fetch_page, \"send_report\": send_report}\n"
+            "HEADERS = {\"accept\": \"json\"}\n"
+            "handlers = {\"a\": fetch_page}\n"
+            "tool_aliases = {\"x\": \"fetch_page\"}\n"
+        )
+        root = fixtures.write_project({"agent.py": src})
+        try:
+            tools = {t.id: t for t in scan_project(root)}
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+        # a dict named for tools, every value a function: the registry; not
+        # any dict (handlers), nor one whose values are not functions
+        self.assertEqual(sorted(tools), ["fetch_page", "send_report"])
+        self.assertEqual(tools["fetch_page"].description, "Fetch a web page's text.")
+        self.assertEqual(tools["send_report"].framework, "python")
+
 
 if __name__ == "__main__":
     unittest.main()
