@@ -60,6 +60,9 @@ def test_the_first_request_names_the_session() -> None:
     class _Conn:
         profile_answer = None
 
+        async def post_trace(self, lines, run_id) -> None:
+            pass
+
         async def post_title(self, title: str) -> bool:
             titles.append(title)
             return True

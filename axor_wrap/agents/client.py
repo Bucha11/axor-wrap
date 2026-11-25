@@ -23,12 +23,26 @@ ENV_FAIL_CLOSED = "AXOR_FAIL_CLOSED"
 
 
 def workspace_root(cwd: str) -> str:
-    """The git root of ``cwd`` (one sidecar per repository), else ``cwd``."""
+    """The git root of ``cwd`` (one sidecar per repository), else ``cwd``.
+
+    A worktree INSIDE its repository — where Claude Code's background sessions
+    work (``.claude/worktrees/…``) — is the repository's: its sessions share
+    the repository's sidecar, so what one of them fetched is tainted in the
+    others. A worktree elsewhere on disk keeps a sidecar of its own: the
+    repository's rules call writes outside it "outside", and that stays so."""
     try:
-        out = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd or None,
-                             capture_output=True, text=True, timeout=2)
-        if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip()
+        out = subprocess.run(["git", "rev-parse", "--show-toplevel", "--git-common-dir"],
+                             cwd=cwd or None, capture_output=True, text=True, timeout=2)
+        lines = out.stdout.strip().splitlines() if out.returncode == 0 else []
+        if lines:
+            top = os.path.realpath(lines[0])
+            common = lines[1] if len(lines) > 1 else ""
+            if common:
+                common = os.path.realpath(os.path.join(top, common))
+                main = os.path.dirname(common) if os.path.basename(common) == ".git" else ""
+                if main and main != top and top.startswith(main + os.sep):
+                    return main
+            return top
     except (OSError, subprocess.SubprocessError):
         pass
     return os.path.realpath(cwd or os.getcwd())

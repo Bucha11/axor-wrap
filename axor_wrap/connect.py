@@ -219,6 +219,7 @@ class PlaneConnector:
         node_id: str,
         *,
         operator_keys: dict[str, str] | None = None,
+        require_signed: bool = False,
         run_id: str | None = None,
         local_budget_cap: int | None = None,
         test_bench: bool = False,
@@ -227,7 +228,11 @@ class PlaneConnector:
     ) -> None:
         self.backend_url = backend_url.rstrip("/")
         self.node_id = node_id
-        self._operator_keys = dict(operator_keys or {})
+        # the caller's own dict, not a copy: a keyset it changes (a coding
+        # sidecar adding a vouched key, dropping a revoked one) is the one
+        # this node's commands verify against
+        self._operator_keys = operator_keys if operator_keys is not None else {}
+        self._require_signed = require_signed
         self._run_id = run_id
         self._local_budget_cap = local_budget_cap
         self._test_bench = test_bench
@@ -279,6 +284,7 @@ class PlaneConnector:
         self.session = plane_session_cls(
             node_id=self.node_id,
             operator_pubkeys=self._operator_keys,
+            require_signed=self._require_signed,
             test_bench=self._test_bench,
             local_budget_cap=self._local_budget_cap,
         )
@@ -412,6 +418,27 @@ class PlaneConnector:
             self.connect()
         assert self._client is not None
         return await self._client.get_notes()
+
+    async def get_peers(self) -> list[dict] | None:
+        """(PlaneClient.get_peers)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.get_peers()
+
+    async def send_agent_message(self, to: str, text: str, taint: list[str]) -> dict:
+        """(PlaneClient.send_agent_message)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.send_agent_message(to, text, taint)
+
+    async def get_agent_thread(self, peer: str) -> list[dict] | None:
+        """(PlaneClient.get_agent_thread)."""
+        if self._client is None:
+            self.connect()
+        assert self._client is not None
+        return await self._client.get_agent_thread(peer)
 
     async def post_notes_delivered(self, ids: list[int], at: str) -> bool:
         """(PlaneClient.post_notes_delivered)."""
