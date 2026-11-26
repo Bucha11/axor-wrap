@@ -4,6 +4,16 @@
 
 ### Added
 
+- **`axor-wrap worker`: skill evals started from the Control Plane's UI.**
+  Started by hand in a repository, it stays in the foreground, tells the plane
+  it is on line (with the coding agents on PATH), and runs the jobs its owner
+  queues — a skill eval, through axor-eval: the agent with the skill and
+  without it, a few times each, judged by the task's "done when" command, the
+  report posted back. It runs only its owner's jobs (the plane offers a machine
+  nothing else), prints each before it starts, reports after every run and
+  every minute during one, and stops between runs when cancelled from the UI.
+  axor-eval comes with the new extra: `pip install 'axor-wrap[eval]'`.
+
 - **Agents of a pair write to each other (`axor_pair`).** A new MCP server
   (`python -m axor_wrap.agents.pair_mcp`) gives Claude Code and Codex three
   tools: `peers`, `send`, `thread`. A Claude agent writes to a Codex one and
