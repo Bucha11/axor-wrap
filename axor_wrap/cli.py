@@ -41,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         "skill": _cmd_skill,
         "connect": _cmd_connect,
         "disconnect": _cmd_disconnect,
+        "worker": _cmd_worker,
     }[args.command]
     return handler(args)
 
@@ -78,6 +79,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="an operator's ed25519 public key (repeatable): with one, the "
                              "sidecar takes only what an operator signed as widening")
     sub.add_parser("disconnect", help="forget this machine's Control Plane")
+    p_worker = sub.add_parser("worker", help="run, in this repository, the jobs you queue "
+                                             "from the Control Plane's UI (a skill eval)")
+    p_worker.add_argument("--repo", type=Path, default=Path.cwd(),
+                          help="the repository the jobs run in (default: here)")
 
     # coding-agent CLIs (axor_wrap.agents)
     p_hook = sub.add_parser("hook", help="hook command run by a coding-agent CLI (reads stdin)")
@@ -222,6 +227,12 @@ def _print_skill_report(report: dict) -> None:
         print(f"     {f['axor']}")
     if not report["findings"]:
         print("nothing here asks the agent to run, fetch, send or change anything")
+
+
+def _cmd_worker(args: argparse.Namespace) -> int:
+    from axor_wrap.worker import main as worker_main
+
+    return worker_main(args.repo)
 
 
 def _cmd_skill(args: argparse.Namespace) -> int:

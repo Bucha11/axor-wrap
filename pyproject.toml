@@ -53,6 +53,11 @@ plane = [
     "httpx>=0.27",
     "cryptography>=42.0",
 ]
+# `axor-wrap worker`: the skill evals queued from the plane's UI run through
+# axor-eval (which itself depends on this package — pip resolves the cycle).
+eval = [
+    "axor-eval>=0.3.3",
+]
 dev = [
     "ruff>=0.5",
     # axor_wrap.plane's tests came over from axor-core with the code, verbatim —
