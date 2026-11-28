@@ -235,6 +235,20 @@ class PlaneLink:
         take = getattr(self.session, "take_pending_experiment", None)
         return self._on_loop(take) if take is not None else None
 
+    def pending_experiment(self) -> dict | None:
+        """The experiment waiting for the next run, not taken (QA-500)."""
+        return self._on_loop(lambda: getattr(self.session, "pending_experiment", None))
+
+    def refuse_experiment(self, reason: str) -> None:
+        """Refuse the pending experiment, acked with why (QA-500)."""
+        refuse = getattr(self.session, "refuse_pending_experiment", None)
+        if refuse is not None:
+            self._on_loop(lambda: refuse(reason))
+
+    @property
+    def test_bench(self) -> bool:
+        return bool(getattr(self.session, "test_bench", False))
+
     def take_injection(self):  # noqa: ANN201 - core type
         return self._on_loop(self._admission.take_injection)
 

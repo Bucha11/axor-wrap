@@ -109,6 +109,23 @@ def run_skill_eval(job: dict, root: Path, report_trial: Callable[[Any], None],
     return post_to_plane(to_json(spec, results), plane_url, key)
 
 
+@contextlib.contextmanager
+def _trial_env():  # noqa: ANN202
+    """The trial runs inherit the repository's hooks in their copy: told they
+    are eval trials, their sidecars report nothing to the plane (QA-505)."""
+    from axor_wrap.agents.sidecar import ENV_EVAL_TRIAL
+
+    before = os.environ.get(ENV_EVAL_TRIAL)
+    os.environ[ENV_EVAL_TRIAL] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(ENV_EVAL_TRIAL, None)
+        else:
+            os.environ[ENV_EVAL_TRIAL] = before
+
+
 class Worker:
     def __init__(self, http: Http, root: Path, *, plane_url: str, key: str,
                  run: Callable[..., str] = run_skill_eval,
@@ -194,8 +211,9 @@ class Worker:
 
         end, eval_id, error = "failed", None, ""
         try:
-            eval_id = self.run(job, self.root, on_trial, self.plane_url, self.key,
-                               on_start=on_start)
+            with _trial_env():
+                eval_id = self.run(job, self.root, on_trial, self.plane_url, self.key,
+                                   on_start=on_start)
             end = "done"
         except Cancelled:
             end, error = "cancelled", "cancelled from the Control Plane"

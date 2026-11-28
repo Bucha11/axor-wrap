@@ -124,3 +124,22 @@ def test_an_unconnected_machine_is_told_how_to_connect(
     monkeypatch.delenv("AXOR_INGEST_KEY", raising=False)
     assert w.main(tmp_path) == 2
     assert "axor-wrap connect" in capsys.readouterr().err
+
+
+def test_trial_runs_are_marked_so_their_sidecars_do_not_report(tmp_path: Path, monkeypatch) -> None:
+    """QA-505: a trial in the eval's copy inherits the repository's hooks; it
+    runs with AXOR_EVAL_TRIAL set, and a sidecar started so has no plane."""
+    from axor_wrap.agents.sidecar import ENV_EVAL_TRIAL, Sidecar
+
+    monkeypatch.delenv(ENV_EVAL_TRIAL, raising=False)
+    monkeypatch.setenv("AXOR_PLANE_URL", "https://plane.test")
+    seen: list = []
+
+    def run(job, root, on_trial, url, key, *, on_start):  # noqa: ANN001, ANN202
+        seen.append(Sidecar(str(tmp_path)).plane_url)
+        return "se-1"
+
+    _worker(FakePlane([JOB]), run, tmp_path).loop(once=True)
+    assert seen == [""]
+    assert w.os.environ.get(ENV_EVAL_TRIAL) is None
+    assert Sidecar(str(tmp_path)).plane_url == "https://plane.test"
