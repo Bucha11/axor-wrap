@@ -10,6 +10,13 @@
   only): the call gets the fault engine's error, and the turn's answer is
   audited as the chaos run. A way to break a tool a hook cannot apply, a
   session off the test bench, or no axor-eval, is refused with the reason.
+- **Skill-eval trial runs no longer report as the team's sessions (QA-505).**
+  A trial runs in a throwaway copy of the repository, hooks included, so its
+  sessions reported to the plane and fed the team's memory (an eval's edit
+  chain was suggested as the test command). `axor-wrap worker` now runs the
+  trials with `AXOR_EVAL_TRIAL=1`, and a sidecar started so governs the trial
+  but reports nothing — nor gives it the team's memory or skills, which would
+  blur what the eval compares.
 
 ## 0.4.1 — 2026-11-26
 

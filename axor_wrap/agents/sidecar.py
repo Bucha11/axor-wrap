@@ -48,6 +48,10 @@ NOTES_TTL = float(os.environ.get("AXOR_NOTES_TTL", "3"))
 # a paused agent's call waits this long for the resume before it is refused
 # (inside the agents' 30 s hook timeout): a short pause costs it nothing
 HOLD_SECONDS = float(os.environ.get("AXOR_HOLD_SECONDS", "20"))
+# set by `axor-wrap worker` for a skill eval's trial runs: governed here, but
+# not reported — a trial in the eval's throwaway copy is not one of the team's
+# sessions, and its commands are not what the team's memory learns from (QA-505)
+ENV_EVAL_TRIAL = "AXOR_EVAL_TRIAL"
 
 
 # the axor_pair MCP server's tools as each agent CLI names them in a hook:
@@ -286,6 +290,8 @@ class Sidecar:
         if enforce is None:
             enforce = os.environ.get(ENV_ENFORCE, "1") not in ("0", "off", "false")
         self.enforce = enforce
+        if plane_url is None and os.environ.get(ENV_EVAL_TRIAL, "") not in ("", "0"):
+            plane_url = ""
         if plane_url is None:
             from axor_wrap import connection
 
