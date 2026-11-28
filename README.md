@@ -165,6 +165,15 @@ fails. An orchestrator running an agent as a node of a tree sets
 `AXOR_NODE_ID` / `AXOR_PARENT_NODE` / `AXOR_TREE_RUN` / `AXOR_ROLE` in its
 environment, and the node is named for it.
 
+A chaos test armed on a session from the Control Plane (Chaos tests → on your
+live agents) is taken at the session's next call to the tool it names, when the
+sidecar runs with `AXOR_TEST_BENCH=1` and axor-eval is installed
+(`pip install 'axor-wrap[eval]'`): that call — and the tool's later calls in the
+same turn — get the fault engine's error instead of running, and the turn's
+answer is audited as the chaos run. A hook can only refuse a call, not rewrite
+its output, so "returning an error" and "not answering in time" apply; any
+other way, or a session off the test bench, is refused and the plane says why.
+
 ### Trees of agents
 
 ```yaml

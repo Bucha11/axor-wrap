@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A chaos test armed on a coding agent runs (QA-500).** The sidecar never
+  took the plane's `pending_experiment`, so it stayed armed and nothing broke.
+  It is now taken at the session's next call to the tool it names (test bench
+  only): the call gets the fault engine's error, and the turn's answer is
+  audited as the chaos run. A way to break a tool a hook cannot apply, a
+  session off the test bench, or no axor-eval, is refused with the reason.
+
 ## 0.4.1 — 2026-11-26
 
 ### Added

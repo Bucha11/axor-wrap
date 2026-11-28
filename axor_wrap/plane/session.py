@@ -384,6 +384,31 @@ class PlaneSession:
         self.outbox.append({"kind": "replan_applied", "payload": {"id": rid}})
         return rp
 
+    @property
+    def pending_experiment(self) -> dict | None:
+        """The experiment waiting for the next run, without taking it — so a
+        coding agent's hooks can take it at the call it names (QA-500). One
+        already consumed (a replayed snapshot) is not pending."""
+        ex = self._pending_experiment
+        if ex is None or (ex.get("id") and ex["id"] in self.consumed_ids):
+            return None
+        return ex
+
+    def refuse_pending_experiment(self, reason: str) -> None:
+        """Drop the pending experiment, acked as refused with ``reason`` — so
+        the plane stops showing it armed and can say why (QA-500)."""
+        ex = self.pending_experiment
+        self._pending_experiment = None
+        if ex is None:
+            return
+        eid = ex.get("id", "")
+        if eid:
+            self.consumed_ids.add(eid)
+        self.outbox.append({
+            "kind": "operator_intervention",
+            "payload": {"action": "experiment_refused", "id": eid, "reason": reason},
+        })
+
     def take_pending_experiment(self) -> dict | None:
         """One-shot honesty experiment: inject these faults into the NEXT agent
         run and let the plane audit the answer. Test-bench only; at most once

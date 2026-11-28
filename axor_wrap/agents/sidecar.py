@@ -55,6 +55,9 @@ HOLD_SECONDS = float(os.environ.get("AXOR_HOLD_SECONDS", "20"))
 _PAIR_TOOL = re.compile(r"(?:^|__|[./])axor_pair(?:__|[./])(peers|send|thread)$")
 # how long a call the hook saw waits for the MCP server to carry it out
 PAIR_CALL_TTL = 120.0
+# the chaos modes a hook can apply: the tool fails, so refusing the call with
+# the fault engine's error is the fault (QA-500)
+_HOOK_MODES = frozenset({"silent_fail", "timeout"})
 
 
 def pair_tool(name: str) -> str | None:
@@ -932,6 +935,9 @@ class Sidecar:
             would = {"gate": gate, "reason": str(decision.reason)}
         else:
             note, would = "", None
+        broken = self._chaos(session, event)
+        if broken is not None:
+            return broken
         session.calls += 1
         record = session.recorder.begin_tool(event.tool_use_id, event.tool, event.tool_input)
         record.started = True
@@ -950,6 +956,48 @@ class Sidecar:
             decision, record, tool, args, trusted)
         self._ship(session)
         return {"allow": True, "note": note}
+
+    def _chaos(self, session: _Session, event: HookEvent) -> dict | None:
+        """A chaos test armed from the plane (QA-500): taken at the first call
+        to a tool it names, then that tool is broken for the rest of the turn.
+        A hook cannot rewrite what a tool returns, only refuse the call — so
+        the modes that make the tool fail are applied (the agent gets the fault
+        engine's error instead of running it), the others are refused with why,
+        and so is a session not on the test bench (the plane shows the reason)."""
+        link, rec = session.link, session.recorder
+        peek = getattr(link, "pending_experiment", None)
+        if rec.experiment is None and peek is not None:
+            ex = peek()
+            if ex and not link.test_bench:
+                link.take_experiment()   # refused there: "not test-bench"
+            elif ex and any(f["tool"] == event.tool for f in ex["faults"]):
+                why = None
+                odd = sorted({f["mode"] for f in ex["faults"]} - _HOOK_MODES)
+                if odd:
+                    why = (f"a coding agent's hooks can make a tool fail, not change what it "
+                           f"returns: {', '.join(odd)} cannot be applied here")
+                else:
+                    from axor_wrap.observe import Experiment
+
+                    try:
+                        exp = Experiment(ex["faults"], seed=rec.run_id,
+                                         experiment_id=ex.get("id", ""))
+                    except ImportError:
+                        why = "breaking a tool needs axor-eval: pip install 'axor-wrap[eval]'"
+                if why is not None:
+                    link.refuse_experiment(why)
+                elif link.take_experiment():
+                    rec.experiment = exp
+        exp = rec.experiment
+        if exp is None or not exp.mode_for(event.tool):
+            return None
+        text, fault = exp.apply(event.tool)
+        record = rec.begin_tool(event.tool_use_id, event.tool, event.tool_input)
+        record.started = True
+        record.fault = fault
+        rec.end_tool(record, text, status="error")
+        self._ship(session)
+        return {"allow": False, "reason": text}
 
     def _post_tool(self, session: _Session, event: HookEvent) -> dict:
         key = event.tool_use_id
@@ -1115,6 +1163,14 @@ class Sidecar:
             return
         claim = [{"kind": "claim", "payload": {"text": answer, "structured": False}}] \
             if answer else []
+        if claim and session.recorder.experiment is not None:
+            # a chaos test is audited on what the agent claimed of the tools
+            # it called — the plane's black-box rule, marked as such (QA-500)
+            from axor_wrap.observe import reconstruct_claim
+
+            called = [t.tool for t in session.recorder.tools if t.executed]
+            claim[0]["payload"].update(structured=True, claim_source="reconstructed",
+                                       claims=reconstruct_claim(called, answer))
         self._ship(session, claim)
         session.pending.clear()
         session.recorder.reset()
